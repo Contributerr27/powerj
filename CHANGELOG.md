@@ -717,6 +717,28 @@ structures, functions) can be built on it. The work is organised in phases (revi
 - Tests: `ShellBootstrapTest` (parsing, absolute / relative / `~`, `-c`, `.pj`, interactive prompt, profile, errors in both
   languages), `SessionStateTest`; smoke scripts `non-interactive.sh` and `launcher.sh`; acceptance rows 21a–21f of `step-4.md`.
 
+### Decided (audit v2 of 2026-11-14: analysis and resolution plan, [#141](https://github.com/yp44/powerj/issues/141))
+- **A third review, no code change yet.** `main` at `c82cd5c` was read on five axes (robustness, clarity, best practices,
+  stability, user experience of the shell): the whole of `powerj-shell` and the main classes of `powerj-fx` directly, the
+  core, the API and the cmdlets file by file with a `file:line` proof for each finding, plus the build, the workflows, the
+  smoke scripts and the last 40 CI runs. Nothing was compiled or run. The report is
+  [docs/AUDIT-v2-2026-11-14.md](docs/AUDIT-v2-2026-11-14.md) (in French, like the architecture review): 14 things worth
+  keeping, 85 findings, the critical ones, and six phases of work.
+- **The plan is the epic [#141](https://github.com/yp44/powerj/issues/141) and its 45 sub-issues** `[AUDITv2] …`
+  ([#142](https://github.com/yp44/powerj/issues/142) to [#186](https://github.com/yp44/powerj/issues/186)), with the rules of
+  #77: a red test first, one pull request per issue, one window for what touches `powerj-api`. The most serious findings:
+  Ctrl+C is lost when a Java call is interrupted ([#165](https://github.com/yp44/powerj/issues/165)); a non-deterministic
+  `PerfTest` turned `main` red ([#142](https://github.com/yp44/powerj/issues/142)); eight Dependabot pull requests are blocked
+  by two tests that depend on the module name of the test cmdlets ([#143](https://github.com/yp44/powerj/issues/143),
+  [#144](https://github.com/yp44/powerj/issues/144)); a character literal `'{'` leaves the user at the `>>` prompt
+  ([#148](https://github.com/yp44/powerj/issues/148)); `mv -f x link` replaces the link, `rm "x?.txt"` removes more than asked,
+  `cp -r` fails on a read-only tree ([#155](https://github.com/yp44/powerj/issues/155) to
+  [#157](https://github.com/yp44/powerj/issues/157)); `cat` can end the session with an `OutOfMemoryError`
+  ([#158](https://github.com/yp44/powerj/issues/158)); a `float` option breaks a third-party cmdlet on every call
+  ([#166](https://github.com/yp44/powerj/issues/166)); the native-access consent is not the gate its Javadoc describes
+  ([#170](https://github.com/yp44/powerj/issues/170)); `ps | kill` has no safety net
+  ([#161](https://github.com/yp44/powerj/issues/161)).
+
 ### Examined, not changed
 - **Left as they are in step 5.10, with the reason**: a `Platform` that tests can inject (the Windows job of the CI runs the
   whole suite on a real Windows, which tests the Windows branches better than a simulated platform would, and nine classes
