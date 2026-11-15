@@ -78,7 +78,7 @@ What goes where:
 | [CHANGELOG.md](CHANGELOG.md) | what **changed** in each version |
 | [docs/adr/](docs/adr/) | decisions taken, with the reason |
 | [docs/SPECIFICATION.md](docs/SPECIFICATION.md) | what the product is required to do (`FR-nn`) |
-| [docs/REVUE-ARCHITECTURE.md](docs/REVUE-ARCHITECTURE.md), [docs/plans/](docs/plans/) | the review and the plans of past iterations: history, not a to-do list |
+| [docs/REVUE-ARCHITECTURE.md](docs/REVUE-ARCHITECTURE.md), [docs/AUDIT-v2-2026-11-14.md](docs/AUDIT-v2-2026-11-14.md), [docs/plans/](docs/plans/) | the reviews and the plans of past iterations: history, not a to-do list (the state of a finding is that of its issue) |
 
 ## Releasing
 
@@ -117,8 +117,9 @@ the sources. Tests force
 English so that they do not depend on the machine. French strings used as *test data* (the expected translation of a
 message) are fine.
 
-One document is deliberately French: [docs/REVUE-ARCHITECTURE.md](docs/REVUE-ARCHITECTURE.md), the architecture review
-and its refactoring plan, kept in the language in which it was commissioned.
+Two documents are deliberately French: [docs/REVUE-ARCHITECTURE.md](docs/REVUE-ARCHITECTURE.md), the architecture review
+and its refactoring plan, and [docs/AUDIT-v2-2026-11-14.md](docs/AUDIT-v2-2026-11-14.md), the audit that followed it; both
+are kept in the language in which they were commissioned. The issues they gave rise to are in English, like the rest.
 
 ## Adding a cmdlet
 

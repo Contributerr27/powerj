@@ -413,7 +413,7 @@ The v1 cmdlet roadmap is done ([roadmap](docs/plans/cmdlet-roadmap.md), end-to-e
 - [Contributing](CONTRIBUTING.md): building, the gates of `verify`, the backlog (GitHub issues), how we work, the language policy, adding a cmdlet. [Security policy](SECURITY.md).
 - [Acceptance checklists](docs/acceptance/) for each development step, and [plans](docs/plans/) of the latest iterations.
 - [Example module `greet`](examples/greet/README.md).
-- [Architecture review](docs/REVUE-ARCHITECTURE.md) (in French): strengths, findings, target organization, design patterns and a phased refactoring plan; Phases 0 to 4 are done, see its §11 to §15. [Changelog](CHANGELOG.md).
+- [Architecture review](docs/REVUE-ARCHITECTURE.md) (in French): strengths, findings, target organization, design patterns and a phased refactoring plan; Phases 0 to 5 are done, see its §11 to §16. [Audit v2 of 2026-11-14](docs/AUDIT-v2-2026-11-14.md) (in French): robustness, clarity, best practices, stability and the user experience of the shell; its plan is the epic [#141](https://github.com/yp44/powerj/issues/141). [Changelog](CHANGELOG.md).
 - [Module `powerj-fx` and `grid`](docs/plans/fx-grid.md): plan, decisions and [acceptance checklist](docs/acceptance/fx-grid.md).
 
 Coming from PowerShell? A few equivalences (full table in [§12.4](docs/SPECIFICATION.md#124-powershell--powerj-mapping)):
