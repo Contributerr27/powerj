@@ -67,7 +67,8 @@ to the code or a line to a document.
   [SECURITY.md](SECURITY.md).
 - Labels say what kind of work it is (`decision` and `maintainer-action` need the maintainer; `release`, `security`,
   `ci`, `fx`, `cmdlet`, `spec`, `tech-debt`, `performance`, `quality`, `accessibility`, `epic`, `v2`…).
-- Work on an issue in a commit or a pull request that says `Refs #nn`; the one that finishes it says `Fixes #nn`.
+- Work on an issue in a pull request that says `Refs #nn`; the one that finishes it says `Fixes #nn` (see
+  [Branches and pull requests](#branches-and-pull-requests)).
 - When an issue is done or dropped, close it with the reason. Do not delete the text: it is the record.
 
 What goes where:
@@ -80,6 +81,27 @@ What goes where:
 | [docs/SPECIFICATION.md](docs/SPECIFICATION.md) | what the product is required to do (`FR-nn`) |
 | [docs/REVUE-ARCHITECTURE.md](docs/REVUE-ARCHITECTURE.md), [docs/AUDIT-v2-2026-11-14.md](docs/AUDIT-v2-2026-11-14.md), [docs/plans/](docs/plans/) | the reviews and the plans of past iterations: history, not a to-do list (the state of a finding is that of its issue) |
 
+## Branches and pull requests
+
+- **Every change goes through a branch and a pull request**, a feature as well as a fix: nothing is pushed directly to
+  `main`. Name the branch after what it does (`fix/123-glob-escape`, `feat/45-sort-object`), one subject per branch.
+- The pull request links its issue: `Refs #nn` while it is a step, `Fixes #nn` when it finishes the issue. It is merged
+  only once the CI is green.
+- **A pull request is merged with "Squash and merge"**: it becomes one commit on `main`. Rewrite the message of that
+  commit before confirming, do not keep the list of the branch's commits: a subject `type(scope): subject (#nn)` with
+  the number of the issue, and a body that says what changed and *why*, ending with `Fixes #nn` or `Refs #nn`. For
+  example:
+
+  ```text
+  fix(fs): escape brackets in Get-ChildItem patterns (#123)
+
+  A path holding `[` was read as a character class, so Get-ChildItem
+  missed files whose name contains brackets. Literal paths are now
+  escaped before the glob is compiled.
+
+  Fixes #123
+  ```
+
 ## Releasing
 
 [docs/RELEASING.md](docs/RELEASING.md): how a version is cut, what the release workflow builds, and what is not done yet
@@ -87,14 +109,15 @@ What goes where:
 
 ## How we work
 
-- **One step per commit**, and every commit builds and passes the tests. The history is read, not squashed.
+- **One step per commit** on a branch, and every commit builds and passes the tests. The pull request is squashed when
+  it is merged, so the message of the squashed commit is what the history of `main` keeps: make it explicit.
 - **A defect gets a failing test first.** Commit it red and `@Disabled` with the reason if the fix comes later; the
   fix removes the `@Disabled`.
 - **Break your own test.** After writing a test, change the code on purpose (invert a condition, drop a call) and check
   that the test fails. A test that cannot fail is worth nothing; several tests of this project were corrected this way.
 - **Commit messages** follow `type(scope): subject` (`feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `build`), in the
-  imperative, and say *why* in the body. Reference the requirement (`FR-70`) or the review finding (`C-13`) when there is
-  one.
+  imperative, and say *why* in the body. Reference the issue (`#nn`, always in the squashed commit), and the requirement
+  (`FR-70`) or the review finding (`C-13`) when there is one.
 - **Requirements are traced.** Behavior comes from a requirement `FR-nn` of [the specification](docs/SPECIFICATION.md);
   cite it in the Javadoc of the class that implements it and in the test that checks it.
 - **Compare what a user writes exactly.** The shell is case-sensitive, as Java is ([ADR 0012](docs/adr/0012-the-shell-is-case-sensitive.md)):
