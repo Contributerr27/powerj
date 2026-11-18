@@ -30,6 +30,9 @@
         <!-- Target Java version. -->
         <java.release>25</java.release>
         <maven.compiler.release>${java.release}</maven.compiler.release>
+        <!-- A javac warning fails the build (-Xlint:all with -Werror, issue #146). Off with -Dpowerj.failOnWarning=false on a JDK
+             newer than the one of the CI, which may add a lint category; off in the quality profile (Error Prone warnings). -->
+        <powerj.failOnWarning>true</powerj.failOnWarning>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <!-- Fixed timestamp of the archives built by the Maven plugins (reproducible builds); set to the release date
@@ -39,9 +42,9 @@
         <junit.version>5.13.4</junit.version>
         <assertj.version>3.27.4</assertj.version>
         <jline.version>4.4.7</jline.version>
-        <jacoco.version>0.8.15</jacoco.version>
+        <jacoco.version>0.8.16</jacoco.version>
         <archunit.version>1.5.1</archunit.version>
-        <spotless.version>3.10.4</spotless.version>
+        <spotless.version>3.11.0</spotless.version>
         <errorprone.version>2.51.0</errorprone.version>
 
         <!-- Per-module coverage floor, overridden by each module (see the jacoco plugin below). -->
@@ -262,6 +265,10 @@
         <!-- Static analysis, as warnings for now (review C-32): ./mvnw -Pquality verify. Needs .mvn/jvm.config. -->
         <profile>
             <id>quality</id>
+            <properties>
+                <!-- Error Prone reports its findings as warnings for now (docs/quality/errorprone-baseline.md). -->
+                <powerj.failOnWarning>false</powerj.failOnWarning>
+            </properties>
             <build>
                 <pluginManagement>
                     <plugins>
@@ -295,17 +302,18 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-enforcer-plugin</artifactId>
-                    <version>3.6.1</version>
+                    <version>3.7.0</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
-                    <version>3.15.0</version>
+                    <version>3.16.0</version>
                     <configuration>
-                        <!-- All javac lint categories are reported (review C-32). They are warnings for now: the baseline is
-                             in docs/quality/lint-baseline.md; the build will fail on new ones once it is clean. A module that
-                             sets its own compilerArgs must use combine.children="append". -->
+                        <!-- All javac lint categories are reported (review C-32) and a warning fails the build (-Werror, issue
+                             #146): there is none left, in the sources or in the tests. A module that sets its own compilerArgs
+                             must use combine.children="append". -->
                         <showWarnings>true</showWarnings>
+                        <failOnWarning>${powerj.failOnWarning}</failOnWarning>
                         <compilerArgs>
                             <arg>-Xlint:all</arg>
                         </compilerArgs>
@@ -314,7 +322,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
-                    <version>3.5.3</version>
+                    <version>3.6.1</version>
                     <configuration>
                         <!-- Messages in English whatever the machine or POWERJ_LANG (FR-61). -->
                         <systemPropertyVariables>
@@ -332,27 +340,27 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-jar-plugin</artifactId>
-                    <version>3.4.2</version>
+                    <version>3.5.1</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-resources-plugin</artifactId>
-                    <version>3.3.1</version>
+                    <version>3.5.0</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-dependency-plugin</artifactId>
-                    <version>3.8.1</version>
+                    <version>3.11.0</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-antrun-plugin</artifactId>
-                    <version>3.1.0</version>
+                    <version>3.2.0</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-install-plugin</artifactId>
-                    <version>3.1.4</version>
+                    <version>3.2.0</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -363,12 +371,12 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-deploy-plugin</artifactId>
-                    <version>3.1.2</version>
+                    <version>3.2.0</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-site-plugin</artifactId>
-                    <version>3.12.1</version>
+                    <version>3.22.0</version>
                 </plugin>
                 <plugin>
                     <groupId>org.jacoco</groupId>

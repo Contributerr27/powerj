@@ -4,18 +4,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 
 /**
  * No French text left in the string literals of the main sources (FR-61): user-visible texts come from the
- * {@code messages_*.properties} bundles. Comments are not checked.
+ * {@code messages_*.properties} bundles. Comments of the sources are not checked.
+ * <p>
+ * The build files, the scripts of {@code ci/} and the workflows are in English too, comments included (CONTRIBUTING,
+ * "Language", audit v2 C-08): their French is found by its accents and by the words that are not English, because a
+ * sentence of the build does not always have an accent ({@code Construit l'application autonome}).
  */
 class NoHardcodedFrenchTest {
 
@@ -27,6 +36,27 @@ class NoHardcodedFrenchTest {
      * justification: only internal texts never shown to the user (rules: control flow, input syntax). None today.
      */
     private static final Set<String> ALLOWED = Set.of();
+
+    /**
+     * Words of French that are not words of English, whole and whatever the case, and the contractions {@code l'} and
+     * {@code d'} before a vowel or an {@code h}, when they do not follow a letter, a hyphen or an apostrophe (so not the
+     * {@code -d'x'} of a shell command). Ambiguous words are left out on purpose: {@code des} (a cipher), {@code sans} (a
+     * font), {@code du} (a command), {@code pour} (to pour).
+     */
+    private static final Pattern FRENCH_WORDS = Pattern.compile(
+            "\\b(avec|dans|une|les|sont|construit|exemples?|lanceur|installeur|autonome|fichiers?|dossiers?|erreurs?"
+                    + "|commandes?|inconnu(e|s|es)?|profils?)\\b"
+                    + "|(?<![\\w'-])[ld]'(?=[aeiouyh\u00e0\u00e2\u00e7\u00e9\u00e8\u00ea\u00eb\u00ee\u00ef\u00f4\u00fb\u00f9\u00fc\u0153]\\p{L})",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+    /**
+     * French that is test data and not a text of the project, by file: only the lines that contain one of the markers, so
+     * that French written elsewhere in the same file is still found. The smoke test of the languages checks the French
+     * messages of the packaged launcher (and the Windows job of {@code ci.yml} does the same check inline).
+     */
+    private static final Map<String, List<String>> FRENCH_TEST_DATA = Map.of(
+            "ci/smoke/languages.sh", List.of("commande inconnue : nope", "Bonjour Yves !"),
+            ".github/workflows/ci.yml", List.of("commande inconnue : nope"));
 
     /** A string, text block or char literal of a source file. */
     record Literal(int line, String value) { }
@@ -43,6 +73,54 @@ class NoHardcodedFrenchTest {
             }
         }
         assertThat(found).as("French texts in literals: move them to messages_en/fr.properties").isEmpty();
+    }
+
+    @Test
+    void buildFilesScriptsAndWorkflowsHaveNoFrench() throws IOException {
+        List<String> found = new ArrayList<>();
+        for (Path file : buildFiles()) {
+            String relative = MessageBundlesTest.ROOT.relativize(file).toString().replace('\\', '/');
+            List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            for (int i = 0; i < lines.size(); i++) {
+                String line = lines.get(i);
+                if (isFrenchLine(line) && !isTestData(relative, line)) {
+                    found.add(relative + ":" + (i + 1) + ": " + line.strip());
+                }
+            }
+        }
+        assertThat(found).as("French in build files, scripts or workflows: write it in English").isEmpty();
+    }
+
+    @Test
+    void theDetectorOfFrenchLinesFindsFrenchWithoutAccentsAndLeavesEnglishAlone() {
+        assertThat(isFrenchLine("<name>PowerJ Exemple : module greet</name>")).isTrue();
+        assertThat(isFrenchLine("Construit l'application autonome (runtime jlink + lanceur jpackage) avec le profil")).isTrue();
+        assertThat(isFrenchLine("# the file is not écrit here")).isTrue();
+        assertThat(isFrenchLine("expect \"$WORK/lang.txt\" 'commande inconnue : nope'")).isTrue();
+        assertThat(isFrenchLine("<description>Builds the application image (jlink runtime and jpackage launcher) with the "
+                + "\"dist\" profile</description>")).isFalse();
+        assertThat(isFrenchLine("# jpackage makes an application bundle on macOS: the launcher is inside it.")).isFalse();
+        assertThat(isFrenchLine("du -sh target; I'd rather not; the user's file; DES and a sans-serif font")).isFalse();
+        // what the review of the pull request of the phase 0 pointed out: English words and shell that look French
+        assertThat(isFrenchLine("# pour the output into the file")).isFalse();
+        assertThat(isFrenchLine("tr -d'x' < in > out; sed -e 's/l'a/b/'")).isFalse();
+        assertThat(isFrenchLine("# le texte de l'installeur, d'une part")).isTrue();
+    }
+
+    @Test
+    void frenchTestDataIsAllowedOnItsOwnLinesOnly() {
+        assertThat(isTestData("ci/smoke/languages.sh", "expect \"$WORK/lang.txt\" 'commande inconnue : nope'")).isTrue();
+        assertThat(isTestData("ci/smoke/languages.sh", "    'Bonjour Yves !' 'syntaxe : expression incompl\u00e8te'")).isTrue();
+        assertThat(isTestData("ci/smoke/languages.sh", "# une phrase de plus, en fran\u00e7ais")).isFalse();
+        assertThat(isTestData("ci/smoke/launcher.sh", "'commande inconnue : nope'")).isFalse();
+    }
+
+    @Test
+    void buildFilesAreFound() throws IOException {
+        assertThat(buildFiles()).extracting(p -> MessageBundlesTest.ROOT.relativize(p).toString().replace('\\', '/'))
+                .contains("pom.xml", "powerj-dist/pom.xml", "examples/greet/pom.xml", "ci/smoke/fx.sh",
+                        "ci/smoke/languages.sh", ".github/workflows/ci.yml")
+                .noneMatch(path -> path.contains("/target/"));
     }
 
     @Test
@@ -69,6 +147,43 @@ class NoHardcodedFrenchTest {
                 .containsExactly("a\\\"b", "c", "\\'", "\"", "// pas un commentaire", "        texte é\n        ", "é");
         assertThat(literals).extracting(Literal::line).containsExactly(4, 4, 4, 4, 4, 5, 8);
         assertThat(literals).filteredOn(l -> isFrench(l.value())).hasSize(2);
+    }
+
+    static boolean isTestData(String relativePath, String line) {
+        return FRENCH_TEST_DATA.getOrDefault(relativePath, List.of()).stream().anyMatch(line::contains);
+    }
+
+    static boolean isFrenchLine(String line) {
+        return isFrench(line) || FRENCH_WORDS.matcher(line).find();
+    }
+
+    /**
+     * The poms, the scripts of {@code ci/} and the workflows. The walk does not enter {@code .git} or a {@code target}
+     * folder, which hold most of the entries of a built checkout.
+     */
+    private static List<Path> buildFiles() throws IOException {
+        Path root = MessageBundlesTest.ROOT;
+        List<Path> files = new ArrayList<>();
+        Files.walkFileTree(root, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attributes) {
+                String name = String.valueOf(dir.getFileName());
+                boolean output = !dir.equals(root) && (name.equals(".git") || name.equals("target"));
+                return output ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
+                String path = root.relativize(file).toString().replace('\\', '/');
+                if (path.endsWith("pom.xml") || path.startsWith("ci/") && path.endsWith(".sh")
+                        || path.startsWith(".github/workflows/") && path.endsWith(".yml")) {
+                    files.add(file);
+                }
+                return FileVisitResult.CONTINUE;
+            }
+        });
+        files.sort(null);
+        return files;
     }
 
     static boolean isFrench(String text) {

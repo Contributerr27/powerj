@@ -773,6 +773,81 @@ structures, functions) can be built on it. The work is organised in phases (revi
   owner of the class. A full `./mvnw verify`, with the graphical module and the application image, is green with Surefire
   3.5.3 and with the plugin versions of #133 (Surefire 3.6.1 among them). Each assertion was seen failing when the code it
   checks was broken on purpose. Only tests changed.
+- **The update of the Maven plugins is applied** (the 13 updates of [#133](https://github.com/yp44/powerj/pull/133), Surefire
+  3.6.1 and the JaCoCo, Spotless, compiler, jar, resources, dependency, antrun, install, deploy, site, enforcer and
+  build-helper plugins), by a commit of the phase 0 branch rather than by the Dependabot pull request, which targets `main`
+  and is then superseded.
+
+### Fixed (Surefire's "Corrupted channel" warning, [#145](https://github.com/yp44/powerj/issues/145))
+- **No build of `powerj-core` ends with "Corrupted channel by directly writing to native stream" any more** (audit v2, B-06).
+  The bytes Surefire had kept in its `.dumpstream` file were `x` and `a`: `ConsoleInputTest` runs `printf a | cat` and
+  `"x" | cat` in an interactive shell, where the last native program writes to the terminal, which is the stdout of the
+  forked JVM, the stream Surefire talks through. The two lines now redirect the output of `cat` to a file of the test (the
+  console is still checked to be paused around a program that reads it). The writers named in the issue (`PosixSpawnTest`,
+  `BackgroundJobsTest`, `NativeRunnerTest`, `Environment.system()`) were not the ones.
+- **The CI looks for it.** `ci/check-surefire-channel.sh` fails when a `target/surefire-reports/*.dumpstream` file exists,
+  after the build of the Linux and macOS jobs (also after a failing build, `if: always()`); it fails too when no
+  `target/surefire-reports` folder exists, since it would then have examined nothing. It was seen failing on
+  `ConsoleInputTest` before the fix. **Not on Windows**: tried there, it reported the `.dumpstream` files of
+  `powerj-architecture` and `powerj-testing`, which hold a message of the forked JVM of Surefire on Windows ("Boot Manifest-JAR
+  contains absolute paths in classpath", hint `-Djdk.net.URLClassPath.disableClassPathURLCheck=true`) and no output of a test.
+  Only a test, a script and the workflow changed.
+
+### Fixed (the smoke test of the graphical module no longer fails at random, [#190](https://github.com/yp44/powerj/issues/190))
+- **`ci/smoke/fx.sh` failed in about one run out of seven with "window: unexpected message"**, on a commit that had passed
+  before and passed again on a re-run (twice in the first runs of the CI that were looked at). The output held a
+  `NullPointerException` thrown by JavaFX itself on its own thread, `GraphicsPipeline.getPipeline()` being null in the
+  picking of the scene (a pointer event). It was reproduced on a development machine under xvfb (6 runs out of 40): `-c`
+  ends the shell, and the JVM, as soon as the window is shown, so JavaFX is torn down while it still handles an event of the
+  pointer. Nothing of PowerJ or of the JDK is in that message and no check of the smoke test depends on it.
+- **That exception is now ignored, and nothing else.** `unexpected_window_messages` (in `ci/smoke/common.sh`) ignores it only
+  when the stack that follows is that of the picking of the scene (`PickResultChooser.processOffer`) and holds no `io.powerj`
+  frame; any other exception, a restricted-method warning, a toolkit that cannot start, or this exception worded differently
+  by another JDK is reported. It was checked on a real failing output (ignored), without the picking frame and with an
+  `io.powerj` frame added (reported), with another exception added (reported) and on a clean output. 60 runs in a row of the window step then gave 5
+  runs with the line and 0 failures. Tried and dropped: a pause of 2 s after the window opens (3 failures out of 40, the
+  race is at the exit), and `Platform.exit()` in a shutdown hook of the JVM (the JVM then does not exit).
+- **What is not fixed**: the same race can print that exception when a user exits the shell while a `grid` window is open.
+  It is recorded in a separate issue, because closing the windows in an orderly way needs a hook at exit that the extension
+  API does not have yet.
+
+### Changed (zero javac warnings, and a warning fails the build, [#146](https://github.com/yp44/powerj/issues/146))
+- **The 23 warnings that `docs/quality/javac-warnings.txt` tolerated are fixed** (audit v2, B-05), and `-Xlint:all` is now
+  `-Werror` for the sources and the tests of every module. The issue named raw types and inexact varargs; a clean build also
+  held 7 `[restricted]` (FFM calls) and 4 `[try]` warnings. Raw `Collected` became `Collected<Object>` in `Collect` and its
+  test (the cmdlet declares its output type with the argument, which the registry reads as before); the two `args(String[])`
+  calls of `FileOpsTest` are cast to `Object[]`; the FFM methods carry `@SuppressWarnings("restricted")` as `PosixSpawn` does;
+  `CmdletRunner.Context` and the test states of `CmdletRunnerTest` suppress `[try]` with the reason (the
+  `InterruptedException` of a state is rethrown, not lost).
+- **The check of the number is gone**: `ci/check-javac-warnings.sh`, `docs/quality/javac-warnings.txt` and the step of the CI
+  that ran them are removed; [docs/quality/lint-baseline.md](docs/quality/lint-baseline.md) now says how the rule works.
+  A raw type added on purpose to a main source and to a test source each failed the build with "warnings found and -Werror
+  specified". `-Dpowerj.failOnWarning=false` turns it off on a JDK newer than the CI's, and the `quality` profile (Error
+  Prone) does not fail on its findings.
+
+### Fixed (French left in two poms, and a test for the build files, [#147](https://github.com/yp44/powerj/issues/147))
+- **The two French texts of the build are in English** (audit v2, C-08): the description of `powerj-dist` (printed by Maven)
+  and the name of `examples/greet`, which the reactor summary of every build showed as "PowerJ Exemple : module greet".
+- **`NoHardcodedFrenchTest` now reads the build files too**: every `pom.xml`, the scripts of `ci/` and the workflows, comments
+  included (the repository is in English, CONTRIBUTING "Language"). The two texts above have no accent, so the accents the
+  test looked for in the Java literals were not enough: it also looks for words that are French and not English (`avec`,
+  `lanceur`, `installeur`, `exemple`, `l'application`…), and it was seen failing on the two poms before the translation and
+  nowhere else. The French that is test data stays allowed, only on the lines that hold it: `ci/smoke/languages.sh` (it checks
+  the French messages of the launcher) and the same check inline in the Windows job of `ci.yml`, so French written
+  elsewhere in those files is still found. `pour` (an English word) is not in the list and `l'`/`d'` do not match after a
+  letter or a hyphen (`tr -d'x'`); the walk skips `.git` and the `target` folders. Only the test and two build texts changed.
+
+### Changed (Dependabot: one group for the actions, and the rule for the queue, [#144](https://github.com/yp44/powerj/issues/144))
+- **The minor and patch updates of the GitHub Actions come in one pull request a week** (a `github-actions` group in
+  `.github/dependabot.yml`, as the Maven plugins and the test libraries already do), so that they do not wait a month each
+  (audit v2, B-02). A major version of an action stays a pull request of its own, because it can change the inputs or the
+  Node runtime and one red check must not hold back the others. JLine and JavaFX stay alone: they ship in the application.
+- **The rule is in CONTRIBUTING, "Dependency updates"**: a Dependabot pull request is merged, or closed with its reason,
+  within two weeks; the queue never holds more than three; what to check before merging a runtime dependency; what a red
+  update means (a test of the layout, a flaky test, or a real break); what is not wanted is closed with the reason.
+- **Not done here, and left to the maintainer**: merging or closing the eight pull requests that were open
+  (#65, #66, #68, #69, #70, #71, #132, #133). They target `main`; #133 is superseded by the update of the plugins applied in
+  the phase 0 branch (#143).
 
 ### Examined, not changed
 - **Left as they are in step 5.10, with the reason**: a `Platform` that tests can inject (the Windows job of the CI runs the
