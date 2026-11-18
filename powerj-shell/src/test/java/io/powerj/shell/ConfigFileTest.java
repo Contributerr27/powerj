@@ -50,6 +50,35 @@ class ConfigFileTest {
     }
 
     @Test
+    void recordingAnAnswerKeepsThePermissionsOfTheFile() throws IOException {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                tmp.getFileSystem().supportedFileAttributeViews().contains("posix"), "POSIX permissions");
+        Path file = Files.writeString(tmp.resolve("config.properties"), "language=fr\n");
+        var shared = java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--");
+        Files.setPosixFilePermissions(file, shared);
+
+        config().set("modules.nativeAccess.org.a", "true");
+
+        assertThat(Files.getPosixFilePermissions(file)).isEqualTo(shared);
+        assertThat(Files.readAllLines(file)).containsExactly("language=fr", "modules.nativeAccess.org.a=true");
+    }
+
+    /** The file removed between the write and the copy of its permissions, or a file system that cannot say (review of the PR). */
+    @Test
+    void permissionsThatCannotBeReadDoNotStopTheAnswerBeingRecorded() throws IOException {
+        Path temp = Files.writeString(tmp.resolve("temp.tmp"), "x");
+        var before = temp.getFileSystem().supportedFileAttributeViews().contains("posix")
+                ? Files.getPosixFilePermissions(temp) : null;
+
+        ConfigFile.keepPermissions(tmp.resolve("removed-meanwhile.properties"), temp); // does not throw
+
+        assertThat(temp).exists();
+        if (before != null) {
+            assertThat(Files.getPosixFilePermissions(temp)).isEqualTo(before); // the private ones stay
+        }
+    }
+
+    @Test
     void creatingTheFileCreatesItsFolderToo() throws IOException {
         var file = new ConfigFile(tmp.resolve("home").resolve("config.properties"));
         file.set("a", "1");

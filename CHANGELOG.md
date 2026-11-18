@@ -916,6 +916,99 @@ this section only says where things stood when 0.2.0 was prepared. Phases 1 to 5
   ([#61](https://github.com/yp44/powerj/issues/61)), the status of each requirement
   ([#62](https://github.com/yp44/powerj/issues/62)), small leftovers ([#63](https://github.com/yp44/powerj/issues/63)).
 
+### Fixed (one reading of "where a quoted text ends" for the continuation prompt, [#148](https://github.com/yp44/powerj/issues/148))
+- **A character literal or a text block no longer leaves the user at the `>> ` prompt for ever** (audit v2, U-01, C-01).
+  `InputCompleteness` knew `"…"` and brackets and nothing else, so `where { $_.name.charAt(0) == '{' }` counted two open braces
+  and one closed and waited for a continuation line; a `"""` text block opened a string, closed it and opened it again. It
+  now reads quoted text as the `Lexer` does: strings (with their `$( … )` interpolations), text blocks and character
+  literals. A lone `'` (`echo it's`) is an apostrophe, not a literal that more input could close.
+- **One function, `Scanning.quotedEnd`, for the three readers** (`io.powerj.core.lang`, already exported to the shell):
+  the continuation prompt, `PreviewCut` (its own copy of the rule is gone; an apostrophe in a word no longer hides a `|`
+  from it) and `Scanning.matching` (which now skips a text block as a whole). Tests: `InputCompletenessTest`,
+  `ScanningTest`, `PreviewCutTest`, and `ReplTest` for the whole road (no `>> ` on the screen). Only the shell and the scanner changed.
+### Fixed and added (the command line: unknown options, a BOM in a script, `$args`, [#149](https://github.com/yp44/powerj/issues/149))
+- **An unknown option is named** (audit v2, U-08). `powerj --foo` used to print the generic usage line and give 2 without saying
+  what was wrong: any word was taken for the script. A word that starts with `-` and is no option of the shell is now
+  refused with `unknown option: --foo`, then the usage, and the code is still 2 (`--help` and `--version` still win). `-h` is
+  now in the usage, which it was accepted without.
+- **A `.pj` script written by Notepad runs its first command** (R-19). `ScriptRun` read the file with `Files.readAllLines`, which
+  keeps the BOM, so the first command was `\uFEFFls`. The script is now read by `Profile.lines`, the function the profile
+  uses (UTF-8, BOM removed): one way to read a file of commands.
+- **A script has arguments** (decision of the issue: yes). `powerj script.pj a b` and `powerj -c "line" a b` set the list `$args`
+  to `["a", "b"]` (empty without arguments). The options of the shell stop at the script word (or at the line after `-c`),
+  as for `python script.py --help`: `powerj deploy.pj --help` gives the script `--help` and prints no usage; `--` before the script
+  word is for a script whose name starts with `-`. A word that starts with `-` before the script and is no option of the shell
+  is refused before anything is created or read, and before `--help` or `--version` is answered (review of the PR). `powerj a.pj b.pj` used to be a usage error and now runs `a.pj` with
+  `$args` = `[b.pj]`. FR-04d, the README table, `step-4.md` (21g to 21i) and `ci/smoke/non-interactive.sh` say so.
+  Left out: named options for scripts.
+
+### Added ("unknown command: grpe, did you mean grep?", [#150](https://github.com/yp44/powerj/issues/150))
+- **A mistyped command gets the hint a mistyped option already had** (audit v2, U-02). `grpe`, `whre` or `fisrt` printed
+  `unknown command: …` and nothing else. The error now adds `, did you mean grep?` when one built-in command, cmdlet
+  (qualified names included) or program is the obvious name. Programs are the names of the `PATH` that completion has already
+  cached (`NativeCommands.cachedNames`): the error never waits for a scan of the `PATH`, and a non-interactive run, where
+  nothing completes, suggests built-in commands and cmdlets only.
+- **One rule for options and commands**: `OptionBinder`'s private helpers became `Suggestions.forName`. It keeps the rule
+  (the only name that begins with the text; else the nearest within two edits, the case apart) and tightens it where it
+  guessed: **two names equally near give no hint** (the first used to win), an exchange of two letters counts for one
+  edit, so `grpe` is found, and **the distance allowed grows with the length of the word** (one edit per three letters, at most
+  two: `xyz` or `qq` are not typos of `ls` or `cp`; review of the PR). `CommandCatalog.nativeCommands()` lets the interpreter and completion share one cache.
+  Tests: `SuggestionsTest`, `UnknownCommandTest`, and the option tests as they were.
+### Fixed and changed (an invalid `history.size` is announced; review of the messages of `powerj-shell`, [#152](https://github.com/yp44/powerj/issues/152))
+- **An invalid `history.size` is shown on the terminal, not only logged** (audit v2, U-13). `history.size=abc` (or `-3`, `0`,
+  empty) was written to the log at `WARNING` and the default size applied without a word, while a file that cannot be
+  read at all is announced (`config.unusable`). Both now go to the same `warn` line: *PowerJ: invalid value for
+  history.size: abc (a positive whole number is expected); the default, 10000, applies.* (`config.invalidValue`, en and fr). The warnings of the settings are worded once the language is known, so `language=fr` and a
+  bad `history.size` in the same file give the warning in French; the log keeps the line at `FINE` only (the console
+  carries it), after the review of the PR.
+- **French: the command is `history`, in every message.** `history.noMatch` said `historique :` and
+  `history.unknownOption` said `history :`; a command is a name and is not translated. Both say `history :`.
+- **Review of the 35 keys of the bundle** (en and fr, against: tone, terminology, what to do next). Kept as they are, with the
+  reason: the startup messages and `config.unusable` already say what happens next (the default settings apply, a backslash is
+  written twice); `history.unknownOption` names the option that exists; the preview banners are symbols and short words on
+  purpose (a line of the screen); the `[y/N]` / `[o/N]` answer letters are the ones `NativeAccessConsent` accepts (`y`, `yes`, `o`, `oui`). The literal `^C`
+  of `Repl` is the echo every terminal shell prints, not a message. Nothing else needed a change.
+### Fixed and documented (Alt+arrow in every form terminals send it, Escape then a letter, "Option as Meta", [#153](https://github.com/yp44/powerj/issues/153))
+- **The Alt+arrow keys of the preview control work on more terminals** (audit v2, U-12). They were bound to one escape
+  sequence each, the one of xterm (`ESC [ 1 ; 3 X`); a terminal that sends `ESC ESC [ X` (tmux by default, many others) or
+  `ESC [ 1 ; 9 X` (the macOS Terminal with Option as Meta) could not change the settings of a timed-out preview from the
+  keyboard, though the banner said it could. `PreviewControl.Key` now lists the three forms and `Previewer` binds each of them,
+  keeping what the editor had on that sequence for a line that shows no values. There is no terminfo capability for a
+  modified arrow (JLine reads none), so no form is read from the terminal. With the preview off the keys keep what the editor
+  had on them: on the real key map `ESC ESC [ C` and `ESC ESC [ D` are the movement by word and still are, the other new forms
+  are bound to nothing and insert nothing (a test on the real key map, from the review of the PR). `PreviewControlKeysTest` sends each form to a
+  `TestTerminal` and watches the setting change.
+- **The README says that Escape then the letter is Alt+V / Alt+P**, which works on every terminal, and how to turn on
+  "Use Option as Meta key" in macOS Terminal and iTerm2 (Option+V sends `√` without it). `docs/acceptance/preview.md` has rows 27 and 28.
+  Left out, as the issue says: configurable key bindings.
+### Fixed (the prompt escapes `%` in one place, [#151](https://github.com/yp44/powerj/issues/151))
+- **A current directory that holds `%` is shown as it is named** (audit v2, U-13). JLine reads `%N`, `%M`, `%P`, `%{`… in a
+  prompt as patterns. Only the prompt of the perf mode doubled the `%` (and only when it was reset after Alt+P); the first
+  prompt of every line and the one reset by Alt+V went through unescaped, so a folder named like `100%N-%M` was
+  rewritten on the screen. `PromptRenderer.forJLine()` is now the one place that knows the rule, used by the read loop,
+  the preview mode and the perf mode; `Perfer` no longer escapes. `ReplTest` types the three modes in a folder named
+  `100%N-%M-%%x` (red before the change); `PromptRendererTest` pins the escaped text.
+
+### Fixed (four failures of the shell that nobody saw, [#154](https://github.com/yp44/powerj/issues/154))
+- **The log works in a folder whose name holds `%`** (audit v2, R-20). The path of the logs folder was handed to
+  `FileHandler` as a pattern, which reads `%t`, `%h`, `%u`, `%g`: a home folder named `100%` or `a%hb` gave a wrong file name or
+  an exception (and no log). The `%` of the folder is now doubled. `DiagnosticLogTest` creates a log in folders named `100%` and `a%hb%g`.
+- **The log no longer resets the logging of the whole JVM** (review C-20, still there). `LogManager.reset()` closed the
+  handlers and reset the levels of every logger, a library's included. `DiagnosticLog.install` now removes the handlers of
+  the root logger only (the console handler of the JDK).
+- **A highlighting failure is in the log.** `ShellCompletion` returned the plain line for any `RuntimeException` and said
+  nothing, so a bug of the highlighting stayed invisible for ever; completion, in the same case, logs at `FINE` (#82). It now
+  logs at `FINE` with `LoggedLine.of(buffer)`, never the line.
+- **Recording a consent keeps the permissions of `config.properties`.** `ConfigFile` wrote through `Files.createTempFile`
+  (mode `600` on POSIX) and moved the file over the user's: the first answer to "load this module?" made the file private.
+  The permissions of the existing file are copied onto the temporary one before the move, best effort (if they cannot be read, the
+  answer is recorded all the same, with private permissions); a new file stays private.
+- **The preview words an `Error` as the shell does for a running line.** An `OutOfMemoryError` showed as
+  `java.lang.OutOfMemoryError: Java heap space` under the line. `Previewer.failed` uses `Supervisor.messageOf` (new, shared
+  with the supervisor: `out of memory: filter the data earlier…`, `recursion too deep`, `internal error: … (details in the log)`)
+  and logs the failure at `WARNING`; an interruption (the runner interrupts an evaluation that a newer line overtook or
+  that passed its deadline) is no failure: it gives the time-out result and logs nothing. Tests: `ShellHygieneTest`, `DiagnosticLogTest`, `ConfigFileTest`.
+
 ## [0.1.0] — never released (baseline)
 
 The functional baseline that 0.2.0 starts from; it was only ever built as `0.1.0-SNAPSHOT`.

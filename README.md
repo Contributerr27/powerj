@@ -132,6 +132,8 @@ Overloads, varargs and argument conversions follow Java rules; `System.exit` and
 
 Persistent history with prefix search on ↑/↓, **Ctrl+R** reverse search, **Tab completion** (commands tagged `[pj]` / `[internal]` / `[native]`, options with descriptions, paths, variables, properties of `$_` and of lambda parameters, Java classes and methods with their signatures), **syntax highlighting** as you type, and a `>>` continuation prompt when a brace, parenthesis or quote is left open or a line ends with `|`, `&&` or `||`.
 
+**Alt+key shortcuts** (Alt+V, Alt+P) are the same as **Escape, then the letter**, which every terminal can send: if Alt does nothing, press Esc, release it, then `v` or `p`. On macOS, Terminal sends `√` and `π` for Option+V and Option+P unless you turn on *Use Option as Meta key* (Terminal: Settings → Profiles → Keyboard; iTerm2: Settings → Profiles → Keys → *Left Option key: Esc+*). Alt+arrows of the preview's banner are understood in the three forms terminals send them (`ESC [ 1 ; 3 X`, `ESC ESC [ X`, `ESC [ 1 ; 9 X`); a terminal or multiplexer that keeps them for itself can still change the settings with `env`.
+
 ### Preview mode
 
 Press **Alt+V**: the prompt becomes `PJ?` and the first results of the line appear **below it while you type**, before Enter, for the pipeline stage under the cursor. Only what changes nothing runs: cmdlets declared `preview = true` and a fixed set of JDK methods; a native command, a built-in command, a Java call that could change something, an assignment or a redirection pauses the preview with the reason. Enter executes the line as usual. Details: FR-66 in the specification, checklist [preview](docs/acceptance/preview.md).
@@ -219,9 +221,9 @@ Optionally, on Windows, an `.exe` installer (per user, with a Start menu entry a
 | `powerj` | Interactive shell (runs `~/.powerj/profile.pj` first) |
 | `powerj --no-profile` | Interactive shell without the startup profile |
 | `powerj --version` | Prints the version and exits |
-| `powerj --help` | Prints the usage and exits |
+| `powerj --help` (or `-h`) | Prints the usage and exits |
 | `powerj -c "ls -r \| where size > 1mb"` | Runs one line, then exits |
-| `powerj script.pj` | Runs a file, then exits (a command may span several lines, as in the profile) |
+| `powerj script.pj a b` | Runs a file, then exits (a command may span several lines, as in the profile); `a b` are the list `$args` of the script, also with `-c "line" a b`; the options of PowerJ go before the script, so `script.pj --help` gives the script `--help` |
 | `ls /etc \| powerj -c 'where { $_.endsWith(".conf") }'` | Standard input feeds the first stage as `String` lines |
 | `powerj --debug …` | Also prints the detailed diagnostic log to the console |
 | `powerj --cd ~/dev/myproject` | Starts the session in that directory (`--cd=<dir>` works too; absolute or relative to where `powerj` was started, `~` expanded). With `-c`, a `.pj` file or standard input as well; applied before the profile, so a `cd` in `profile.pj` still wins. Given once, with a path as value (not starting with `-`). A directory that does not exist is an error, exit code 1 |

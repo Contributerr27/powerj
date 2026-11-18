@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import org.jline.terminal.Terminal;
 
@@ -47,10 +48,14 @@ final class ShellBootstrap {
      *                       when absent (FR-04d)
      * @param usageError     the command line is wrong: {@code --cd} given twice, without a value, or with a value that
      *                       starts with {@code -} (an option, not a path; write {@code ./-x} for such a folder)
-     * @param script         what remains: {@code -c "line"}, a {@code .pj} file, or nothing for the interactive shell
+     * @param unknownOption  the first word that starts with {@code -} and is no option of the shell (and comes before
+     *                       {@code --}); {@code null} when there is none (U-08)
+     * @param script         what remains: {@code -c "line"} or a {@code .pj} file, then the arguments of the script
+     *                       (the options of the shell stop at the script word, or at {@code --}: {@code script.pj --help}
+     *                       gives the script {@code --help}); nothing for the interactive shell
      */
     record Options(boolean debug, boolean noProfile, boolean version, boolean help, String startDirectory,
-                   boolean usageError, List<String> script) {
+                   boolean usageError, String unknownOption, List<String> script) {
 
         private static final String CD = "--cd";
 
@@ -61,9 +66,19 @@ final class ShellBootstrap {
             boolean help = false;
             String startDirectory = null;
             boolean usageError = false;
+            String unknownOption = null;
+            boolean optionsEnded = false;
             List<String> script = new ArrayList<>();
             for (int i = 0; i < args.length; i++) {
                 String arg = args[i];
+                if (optionsEnded) {
+                    script.add(arg);
+                    continue;
+                }
+                if (arg.equals("--")) {
+                    optionsEnded = true; // what follows belongs to the script, even if it looks like an option
+                    continue;
+                }
                 boolean cd = arg.equals(CD);
                 if (cd || arg.startsWith(CD + "=")) {
                     // One --cd only, and a value that is a path: nothing, empty or an option (-…) is a usage error.
@@ -79,10 +94,26 @@ final class ShellBootstrap {
                     case "--no-profile" -> noProfile = true;
                     case "--version" -> version = true;
                     case "--help", "-h" -> help = true;
-                    default -> script.add(arg);
+                    default -> {
+                        if (arg.equals("-c")) {
+                            script.add(arg);
+                            if (i + 1 < args.length) {
+                                script.add(args[++i]); // the line, whatever it starts with
+                            }
+                            optionsEnded = true; // the rest is for the script, as for `python script.py --help`
+                        } else if (arg.length() > 1 && arg.startsWith("-")) {
+                            if (unknownOption == null) {
+                                unknownOption = arg;
+                            }
+                        } else {
+                            script.add(arg);
+                            optionsEnded = true; // the script word: its arguments may look like options of the shell
+                        }
+                    }
                 }
             }
-            return new Options(debug, noProfile, version, help, startDirectory, usageError, List.copyOf(script));
+            return new Options(debug, noProfile, version, help, startDirectory, usageError, unknownOption,
+                    List.copyOf(script));
         }
     }
 
@@ -104,6 +135,13 @@ final class ShellBootstrap {
     /** @return the exit code of the process */
     int execute(String... args) {
         Options options = Options.parse(args);
+        if (options.unknownOption() != null) {
+            // Before anything is created or read: a wrong command line has no side effect, and it is refused before
+            // --help or --version are answered. The language is not resolved yet: the system's (as home.createFailed).
+            environment.messages().println(Messages.get("usage.unknownOption", options.unknownOption()));
+            environment.messages().println(Messages.get("usage"));
+            return 2;
+        }
         if (options.help()) {
             return print(Messages.get("usage"));
         }
@@ -118,11 +156,14 @@ final class ShellBootstrap {
             environment.messages().println(Messages.get("home.createFailed", home.dir(), e.getMessage()));
         }
         logs.install(home.logsDir(), options.debug(), environment.messages()::println);
-        ShellConfig config = ShellConfig.load(home.configFile(), environment.messages()::println);
+        // The warnings about the settings are worded once the language is known: it comes from the same file.
+        List<Supplier<String>> configWarnings = new ArrayList<>();
+        ShellConfig config = ShellConfig.loadWarning(home.configFile(), configWarnings::add);
         // Language of the messages (FR-61): -Dpowerj.language, POWERJ_LANG, config.properties, then the system.
         LanguageSetting.set(LanguageSetting.resolve(environment.properties().get(Language.PROPERTY),
                 environment.variables().get(Language.ENVIRONMENT_VARIABLE), config.language(),
                 environment.systemLocale()));
+        configWarnings.forEach(warning -> environment.messages().println(warning.get()));
         if (options.usageError()) {
             environment.messages().println(Messages.get("usage"));
             return 2;

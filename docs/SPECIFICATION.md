@@ -156,11 +156,14 @@ The current directory belongs to the shell: it is the base for relative paths of
 | Invocation | Effect |
 |---|---|
 | `powerj -c "<line>"` | Runs the line then exits. |
-| `powerj file.pj` | Runs the file line by line (in v1: a sequence of lines, without control structures) then exits. |
+| `powerj file.pj` | Runs the file line by line (in v1: a sequence of lines, without control structures) then exits. A file written by Notepad (UTF-8 with a BOM) is read like the profile. |
+| `powerj -c "<line>" a b`, `powerj file.pj a b` | What follows the line or the file is the list **`$args`** of the script (`$args[0]` is `a`); without any, `$args` is empty. The options of the shell stop at the script word (or at the line after `-c`): `powerj deploy.pj --help` gives the script `$args` = `["--help"]` and prints no usage. |
 | `… \| powerj -c "where { $_.contains(\"x\") }"` | If stdin is not a terminal, its lines feed the first stage (`String` lines). |
 | `powerj --cd <dir> …` (or `--cd=<dir>`) | Sets the **initial current directory** (FR-04b) of the session, in the interactive shell as in non-interactive mode. |
 
 In this mode: no prompt, no history, no colors if the output is not a terminal, and a terminating error stops execution. Process **return code**: `exit <n>` if called; otherwise 0 if the last command succeeded, the code of the last native command if it failed, 1 for a PowerJ terminating error.
+
+The options of the shell (`--cd`, `--debug`, `--no-profile`, `--version`, `--help`/`-h`) stand before the script word (`file.pj`, or the line that follows `-c`), in any order; `--` ends them too, for a script whose name starts with `-` (`powerj -- -odd.pj`). What follows the script word is for the script, whatever it looks like. A word that starts with `-` before the script and is none of the options is refused, before anything is created or read and before `--help` or `--version` is answered: `unknown option: --foo`, then the usage, return code 2.
 
 `--cd` is an option of the shell, like `--debug` and `--no-profile`, not an argument of the script. Its value is an absolute path or a path relative to the directory `powerj` was started in, and a leading `~` is expanded (FR-62) because `cmd.exe` and quoted arguments do not do it. It sets what FR-04b calls the current directory: the base of relative paths for cmdlets, redirections and Java calls, the working directory of native commands, `$pwd` and the prompt; the JVM's own working directory is not touched, and the path of `powerj script.pj` is still looked up where `powerj` was started. It is applied **before** `profile.pj` (FR-63), so a `cd` in the profile wins, and it is independent of `--no-profile`. If the directory does not exist or is not a directory, PowerJ prints an error with the path and exits with code 1 without starting the shell (no fallback to the current directory); `--cd` may be given **once**: a second one, a missing or empty value, or a value that starts with `-` (an option, not a path; write `./-x` for a folder of that name) is a usage error (exit code 2, with the usage line). `--help` lists the option.
 - CA: `powerj --cd C:\dev -c pwd` displays `C:\dev` whatever the directory of `cmd.exe`; `powerj --cd ~/docs` shows the prompt `PJ <home>/docs>`; `powerj --cd build script.pj` runs `script.pj` (found where it was typed) from `build`; `powerj --cd absent -c pwd` prints an error naming `absent` and `%ERRORLEVEL%` is 1; `powerj --cd` , `powerj --cd a --cd b` and `powerj --cd -c pwd` print the usage; a `cd` in `profile.pj` overrides `--cd`.
@@ -259,7 +262,8 @@ There is **no** long form (`pj-ls`, `Get-ChildItem`…).
 2. user-defined alias;
 3. **cmdlet** (built-in or provided by a module);
 4. **native command** found in the `PATH` (with `PATHEXT` on Windows);
-5. otherwise: error `unknown command: xxx` with suggestions (edit distance).
+5. otherwise: error `unknown command: xxx`, with `, did you mean yyy?` when one built-in command, cmdlet or program is the obvious name: the only name that begins with the word, or else the only name within a few edits (one per three letters of the word, at most two; an exchange of two letters is one edit, the case is ignored); never a choice between several. The programs offered are the names of the `PATH` that completion has already cached: the error never waits for a scan.
+- CA: `grpe x` prints `unknown command: grpe, did you mean grep?`; `gr` (grep, grid, group…) and `xyzzy` print no hint.
 
 **FR-14 — `^` prefix.** `^name` skips steps 1 to 3 and always launches the native command: `^ls`, `^find "foo" a.txt`, `^sort data.txt`.
 - CA: on Windows, `^find "x" a.txt` runs `C:\Windows\System32\find.exe`.

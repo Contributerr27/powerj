@@ -26,6 +26,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import io.powerj.api.Cmdlet;
 import io.powerj.api.CmdletContext;
@@ -185,6 +188,36 @@ class PreviewControlKeysTest {
         exit();
     }
 
+    /** What terminals other than xterm send for Alt+▲ and Alt+►: Escape then the arrow, and the macOS Option-as-Meta form. */
+    @ParameterizedTest
+    @ValueSource(strings = {"\033\033[A", "\033[1;9A"})
+    void everyKnownFormOfAltUpLengthensTheDeadline(String altUp) throws Exception {
+        timeOut();
+
+        terminal.type(altUp);
+
+        awaitUntil(() -> "400".equals(variable(PreviewSettings.DEADLINE_VARIABLE)));
+        awaitUntil(() -> shown().contains("timed out after 400 ms · [duration 400 ms]  max/stage 50"));
+        exit();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"'\033\033[C', '\033\033[B', '\033\033[D'", "'\033[1;9C', '\033[1;9B', '\033[1;9D'"})
+    void everyKnownFormOfAltRightDownAndLeftChangesTheLimit(String altRight, String altDown, String altLeft)
+            throws Exception {
+        timeOut();
+
+        terminal.type(altRight);
+        awaitUntil(() -> shown().contains("duration 200 ms  [max/stage 50]"));
+        terminal.type(altDown);
+
+        awaitUntil(() -> "20".equals(variable(PreviewSettings.LIMIT_VARIABLE)));
+        awaitUntil(() -> shown().contains("duration 200 ms  [max/stage 20]"));
+        terminal.type(altLeft);
+        awaitUntil(() -> shown().contains("[duration 200 ms]  max/stage 20"));
+        exit();
+    }
+
     @Test
     void altRightThenAltDownLowersTheLimitOfTheStages() throws Exception {
         timeOut();
@@ -227,6 +260,29 @@ class PreviewControlKeysTest {
         assertThat(variable(PreviewSettings.LIMIT_VARIABLE)).isNull();
         assertThat(variable(PreviewSettings.DEADLINE_VARIABLE)).isEqualTo("200"); // as the test set it
         assertThat(shown()).doesNotContain("[duration");
+        exit();
+    }
+
+    /**
+     * With the preview off, on the real key map of the editor: the editor binds Escape-Escape-[-D and C to the movement by
+     * word, which is still what they do (review of the PR); the forms it binds to nothing do nothing, and insert nothing.
+     */
+    @Test
+    void withThePreviewOffTheNewFormsKeepWhatTheEditorHadOnThem() throws Exception {
+        type("foo bar");
+
+        terminal.type("\033\033[D"); // the editor: backward-word
+        terminal.type("X"); // "foo Xbar"
+        awaitUntil(() -> reader.getBuffer().toString().equals("foo Xbar"));
+        terminal.type("\033\033[C"); // forward-word
+        terminal.type("Y");
+        awaitUntil(() -> reader.getBuffer().toString().equals("foo XbarY"));
+
+        for (String unbound : List.of("\033\033[A", "\033\033[B", "\033[1;9A", "\033[1;9B", "\033[1;9C", "\033[1;9D")) {
+            terminal.type(unbound);
+            terminal.type("z");
+        }
+        awaitUntil(() -> reader.getBuffer().toString().equals("foo XbarYzzzzzz")); // no "[A", no ";9A" inserted
         exit();
     }
 
