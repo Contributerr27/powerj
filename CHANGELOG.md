@@ -851,6 +851,23 @@ structures, functions) can be built on it. The work is organised in phases (revi
   (#65, #66, #68, #69, #70, #71, #132, #133). They target `main`; #133 is superseded by the update of the plugins applied in
   the phase 0 branch (#143).
 
+### Changed (the low-risk Dependabot updates, in one batch, [#144](https://github.com/yp44/powerj/issues/144))
+- **Eight Dependabot pull requests are taken together in one branch and verified at once**, instead of one at a time (each
+  merge makes Dependabot rebase the others and restart their CI): the test libraries (#68), pitest 1.30.2 (#202), the Maven
+  wrapper 3.9.11 → 3.10.1 (#201), three GitHub Actions: `upload-artifact` 5 → 7.0.2 (#66), `setup-java` 5.7 → 6.3.0 (#200)
+  and `checkout` 5.1 → 7.0.1 (#65, whose branch was 111 commits behind and is replayed on the workflows as they are), and the
+  two libraries that ship: JLine 4.4.7 → 4.7.0 (#70, the only runtime dependency) and JavaFX 25.0.5 → 27.0.1 (#69, optional
+  module `powerj-fx`).
+- **What was run on them, and what was not**: the full `verify` (0 javac warnings), the `fx-ui` tests under Xvfb, the `dist`
+  build and every script of `ci/smoke`. Not run: JLine on a real terminal (the CI has none), and JavaFX rendering on macOS
+  (Metal; the macOS job opens no window). Both are to look at by hand before a release.
+- **JavaFX 27 and the window smoke test**: the known race at the exit of the JVM (#194) shows itself with the same frequency
+  (5 runs in 30 print an exception line, as before). One more shape of it appeared, the header
+  `Exception in thread "JavaFX Application Thread"` cut by the exit with nothing after it (1 run in 30): the filter of
+  `ci/smoke/common.sh` ignores it, only as the very last line of the output, with a test for each side.
+- `mvnw.cmd` of #201 is not taken: it differs by line endings alone (the file is CRLF by `.gitattributes`), only
+  `maven-wrapper.properties` changes. The Maven version named by `README.md` and `CONTRIBUTING.md` follows the wrapper.
+
 ### Examined, not changed
 - **Left as they are in step 5.10, with the reason**: a `Platform` that tests can inject (the Windows job of the CI runs the
   whole suite on a real Windows, which tests the Windows branches better than a simulated platform would, and nine classes
