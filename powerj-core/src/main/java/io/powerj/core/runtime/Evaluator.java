@@ -4,7 +4,6 @@ import java.io.File;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -206,7 +205,7 @@ public final class Evaluator {
                 for (Object element : elements(evaluate(target))) {
                     results.add(PropertyAccess.property(element, name));
                 }
-                yield Collections.unmodifiableList(results);
+                yield ShellLists.of(results);
             }
             case Ast.SpreadInvoke(var target, var method, var arguments) -> {
                 List<Object> receivers = elements(evaluate(target));
@@ -215,7 +214,7 @@ public final class Evaluator {
                 for (Object element : receivers) {
                     results.add(invoke(element, method, args));
                 }
-                yield Collections.unmodifiableList(results);
+                yield ShellLists.of(results);
             }
             case Ast.Invoke(var target, var method, var arguments) -> invoke(eval(target), method, values(arguments));
             case Ast.New(var type, var arguments) -> JavaInvoker.construct(session.java().require(type), values(arguments));
@@ -228,7 +227,7 @@ public final class Evaluator {
             case Ast.Unary(var op, var operand) -> Operators.unary(op, evaluate(operand));
             case Ast.Conditional(var condition, var whenTrue, var whenFalse) ->
                     Operators.bool(Operator.AND, evaluate(condition)) ? evaluate(whenTrue) : evaluate(whenFalse);
-            case Ast.ListLiteral(var elements) -> Collections.unmodifiableList(values(elements));
+            case Ast.ListLiteral(var elements) -> ShellLists.of(values(elements));
             case Ast.Now() -> Instant.now();
         };
     }
@@ -372,10 +371,10 @@ public final class Evaluator {
     /** {@code x[i]}: integer index on a list, array or string; key on a {@code Map}. */
     private static Object at(Object target, Object index) {
         if (target instanceof Map<?, ?> map) {
-            return map.get(index);
+            return PropertyAccess.get(map, index);
         }
         if (index instanceof Integer || index instanceof Long || index instanceof Short || index instanceof Byte) {
-            return PropertyAccess.index(target, ((Number) index).intValue());
+            return PropertyAccess.index(target, ((Number) index).longValue());
         }
         throw new PjException(Messages.get("index.integerExpected", Values.describe(index)));
     }
@@ -397,7 +396,7 @@ public final class Evaluator {
         return switch (values.size()) {
             case 0 -> null;
             case 1 -> values.getFirst();
-            default -> Collections.unmodifiableList(new ArrayList<>(values));
+            default -> ShellLists.of(values);
         };
     }
 }

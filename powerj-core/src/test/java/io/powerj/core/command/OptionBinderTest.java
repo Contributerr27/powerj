@@ -71,14 +71,14 @@ class OptionBinderTest {
         assertThatThrownBy(() -> bind("--RECURSE")).hasMessage("t: unknown option --RECURSE, did you mean --recurse?");
         assertThatThrownBy(() -> bind("--Recurse")).hasMessageContaining("did you mean --recurse");
         assertThatThrownBy(() -> bind("--REC")).as("an abbreviation is exact too").hasMessageContaining("unknown option --REC");
-        assertThatThrownBy(() -> bind("-R")).as("a short name is exact").hasMessage("t: unknown option -R");
+        assertThatThrownBy(() -> bind("-R")).as("a short name is exact").hasMessage("t: unknown option -R (short options: -a, -r, -f)");
     }
 
     @Test
     void theValueOfAnEnumeratedOptionIsSpelledInLowerCase() {
         assertThat(bind("--mode", "fast").mode()).isEqualTo(Mode.FAST);
-        assertThatThrownBy(() -> bind("--mode", "FAST")).hasMessageContaining("--mode accepts [fast, safe], not 'FAST'");
-        assertThatThrownBy(() -> bind("--mode", "Safe")).hasMessageContaining("not 'Safe'");
+        assertThatThrownBy(() -> bind("--mode", "FAST")).hasMessageContaining("--mode accepts [fast, safe], not \"FAST\"");
+        assertThatThrownBy(() -> bind("--mode", "Safe")).hasMessageContaining("not \"Safe\"");
     }
 
     @Test
@@ -88,7 +88,7 @@ class OptionBinderTest {
         for (String other : List.of("yes", "no", "oui", "non", "1", "0", "TRUE", "True", "FALSE", "No", "")) {
             assertThatThrownBy(() -> bind("--recurse=" + other))
                     .as("--recurse=%s", other)
-                    .hasMessage("t: --recurse expects true or false, not '" + other + "'");
+                    .hasMessage("t: --recurse expects true or false, not \"" + other + "\"");
         }
     }
 
@@ -146,10 +146,11 @@ class OptionBinderTest {
     void errorsAreExplicit() {
         assertThatThrownBy(() -> bind("--recurce"))
                 .hasMessage("t: unknown option --recurce, did you mean --recurse?");
-        assertThatThrownBy(() -> bind("-z")).hasMessage("t: unknown option -z");
+        assertThatThrownBy(() -> bind("-z")).hasMessage("t: unknown option -z (short options: -a, -r, -f)");
+        assertThatThrownBy(() -> bind("-o")).hasMessage("t: unknown option -o, did you mean --output?");
         assertThatThrownBy(() -> bind("--filter")).hasMessage("t: value expected after --filter");
         assertThatThrownBy(() -> bind("--max-depth", "trois"))
-                .hasMessage("t: invalid value for --max-depth: 'trois'");
+                .hasMessage("t: invalid value for --max-depth: \"trois\" (an integer expected)");
         assertThatThrownBy(() -> bind("--mode", "slow")).hasMessageContaining("--mode accepts [fast, safe]");
     }
 
@@ -198,5 +199,104 @@ class OptionBinderTest {
 
         assertThat(params.x()).isFalse();
         assertThat(params.objects()).hasSize(1);
+    }
+
+    // --- every primitive has a default and a conversion (audit v2 R-02, #166) ---
+
+    record Small(@Option(shortName = 'r') float ratio, short count, byte flags, char letter, @Option(shortName = 'x') boolean x) { }
+
+    @Test
+    void everyPrimitiveComponentHasItsDefaultWhenNothingIsGiven() {
+        assertThat(OptionBinder.bind("t", Small.class, List.of())).isEqualTo(new Small(0f, (short) 0, (byte) 0, '\0', false));
+    }
+
+    @Test
+    void floatShortByteAndCharAreConvertedLikeTheOtherNumbers() {
+        Small bound = OptionBinder.bind("t", Small.class,
+                List.of("--ratio", "1.5", "--count", "300", "--flags", "-7", "--letter", "z"));
+
+        assertThat(bound).isEqualTo(new Small(1.5f, (short) 300, (byte) -7, 'z', false));
+    }
+
+    @Test
+    void aValueOutOfTheRangeOfTheTypeIsAnInvalidValueNotAnInternalError() {
+        assertThatThrownBy(() -> OptionBinder.bind("t", Small.class, List.of("--flags", "300")))
+                .isInstanceOf(io.powerj.core.error.PjException.class).hasMessageContaining("--flags");
+        assertThatThrownBy(() -> OptionBinder.bind("t", Small.class, List.of("--letter", "ab")))
+                .isInstanceOf(io.powerj.core.error.PjException.class).hasMessageContaining("--letter");
+    }
+
+    // --- a record of parameters is checked once, when its cmdlet is registered (#166) ---
+
+    record TwiceShort(@Option(shortName = 'f') String first, @Option(shortName = 'f') String second) { }
+
+    record TwiceLong(@Option(longName = "same") String first, @Option(longName = "same") String second) { }
+
+    record TwicePosition(@Option(position = 0) String first, @Option(position = 0) String second) { }
+
+    record ListNotLast(@Option(position = 0) List<String> many, @Option(position = 1) String last) { }
+
+    /** Any type: given an instance of it, as a block or an expression gives one (the rule before #166, kept). */
+    record AnyType(java.util.regex.Pattern pattern, List<Thread> threads) { }
+
+    @Test
+    void anOptionOfAnyTypeIsAcceptedAndReceivesAnInstanceOfIt() {
+        OptionBinder.validate(AnyType.class);
+        var pattern = java.util.regex.Pattern.compile("a.*");
+
+        assertThat(OptionBinder.bind("t", AnyType.class, List.of("--pattern", pattern)).pattern()).isSameAs(pattern);
+        assertThatThrownBy(() -> OptionBinder.bind("t", AnyType.class, List.of("--pattern", "a.*")))
+                .isInstanceOf(io.powerj.core.error.PjException.class).hasMessage("t: unsupported option type: Pattern");
+    }
+
+    @Test
+    void aValidRecordHasNoProblem() {
+        OptionBinder.validate(Params.class);
+        OptionBinder.validate(Small.class);
+        OptionBinder.validate(Required.class);
+    }
+
+    @Test
+    void aRecordThatCannotWorkIsRefusedWithTheNameOfTheComponent() {
+        assertThatThrownBy(() -> OptionBinder.validate(TwiceShort.class)).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("second").hasMessageContaining("-f");
+        assertThatThrownBy(() -> OptionBinder.validate(TwiceLong.class)).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("second").hasMessageContaining("--same");
+        assertThatThrownBy(() -> OptionBinder.validate(TwicePosition.class)).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("second").hasMessageContaining("position 0");
+        assertThatThrownBy(() -> OptionBinder.validate(ListNotLast.class)).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("many");
+    }
+
+    // --- what the help and the errors tell about the type of an option (audit v2, U-05, #176) ---
+
+    record Typed(@Option(position = 0, mandatory = true) String target, @Option(mandatory = true) int count,
+                 long size, java.time.Duration since, Path out, Mode mode, double ratio, @Option(shortName = 'c') char letter,
+                 boolean all) { }
+
+    @Test
+    void anOptionHasALabelThatSaysWhatItTakes() {
+        var labels = OptionBinder.specs(Typed.class).stream()
+                .collect(java.util.stream.Collectors.toMap(OptionBinder.OptionSpec::longName, OptionBinder.OptionSpec::valueLabel));
+
+        assertThat(labels).containsEntry("count", "<n>").containsEntry("size", "<size>").containsEntry("since", "<duration>")
+                .containsEntry("out", "<path>").containsEntry("mode", "{fast|safe}").containsEntry("ratio", "<number>")
+                .containsEntry("letter", "<char>").containsEntry("target", "<text>");
+    }
+
+    @Test
+    void aMissingPositionalIsNotCalledAnOptionWithDashes() {
+        assertThatThrownBy(() -> OptionBinder.bind("t", Typed.class, List.of("--count", "1")))
+                .hasMessage("t: missing required argument: <target>");
+        assertThatThrownBy(() -> OptionBinder.bind("t", Typed.class, List.of("x")))
+                .hasMessage("t: missing required option: --count");
+    }
+
+    @Test
+    void anInvalidValueSaysWhatWasExpected() {
+        assertThatThrownBy(() -> OptionBinder.bind("t", Typed.class, List.of("x", "--count", "1", "--size", "big")))
+                .hasMessage("t: invalid value for --size: \"big\" (an integer or a size such as 10kb expected)");
+        assertThatThrownBy(() -> OptionBinder.bind("t", Typed.class, List.of("x", "--count", "1", "--ratio", "?")))
+                .hasMessage("t: invalid value for --ratio: \"?\" (a number expected)");
     }
 }

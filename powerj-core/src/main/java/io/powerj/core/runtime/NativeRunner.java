@@ -6,7 +6,6 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.nio.charset.Charset;
@@ -254,11 +253,12 @@ public final class NativeRunner {
 
     private List<NativeRun> startGroup(List<ProcessBuilder> builders, List<Command> commands, ExecutionContext context,
                                        Source input, Pipe output) throws InterruptedException {
-        Session session = context.session();
-        ShellIo io = context.io();
-        Consumer<Object> sink = context.sink();
-        Consumer<String> errors = context.errors();
         long start = System.nanoTime();
+        // Before anything is started: an unusable POWERJ_NATIVE_ENCODING is an error of the line, not of processes left over.
+        List<Charset> charsets = new ArrayList<>(commands.size());
+        for (Command command : commands) {
+            charsets.add(encoding.forProgram(command.executable(), context.session().environment()));
+        }
         List<Process> processes;
         try {
             processes = ProcessBuilder.startPipeline(builders);
@@ -269,29 +269,15 @@ public final class NativeRunner {
         if (output != null) {
             output.onAbort(stop);
         }
-
-        List<Thread> threads = new ArrayList<>();
         Thread writer = null;
-        Process first = processes.getFirst();
-        if (input != null) {
-            Charset charset = encoding.forProgram(commands.getFirst().executable(), session.environment());
-            writer = Thread.ofVirtual().name("powerj-stdin").start(() -> writeObjects(input, first, charset, io));
-        } else if (builders.getFirst().redirectInput() == ProcessBuilder.Redirect.PIPE) {
-            closeQuietly(first.getOutputStream());
+        List<Thread> readers;
+        try {
+            writer = startWriter(builders, charsets.getFirst(), processes.getFirst(), context, input);
+            readers = startReaders(builders, charsets, processes, context, output);
+        } catch (RuntimeException | Error e) {
+            stop.run(); // the processes are running: whatever went wrong, they must not stay behind
+            throw e;
         }
-        Process last = processes.getLast();
-        if (builders.getLast().redirectOutput() == ProcessBuilder.Redirect.PIPE) {
-            Charset charset = encoding.forProgram(commands.getLast().executable(), session.environment());
-            Consumer<String> lines = output != null ? output::put : sink::accept;
-            threads.add(pump(last.getInputStream(), charset, lines));
-        }
-        for (int i = 0; i < processes.size(); i++) {
-            if (builders.get(i).redirectError() == ProcessBuilder.Redirect.PIPE && !builders.get(i).redirectErrorStream()) {
-                Charset charset = encoding.forProgram(commands.get(i).executable(), session.environment());
-                threads.add(pump(processes.get(i).getErrorStream(), charset, errors));
-            }
-        }
-
         List<NativeRun> runs = new ArrayList<>(processes.size());
         try {
             for (int i = 0; i < processes.size(); i++) {
@@ -306,7 +292,7 @@ public final class NativeRunner {
                 writer.interrupt();
                 writer.join();
             }
-            for (Thread thread : threads) {
+            for (Thread thread : readers) {
                 thread.join();
             }
         } catch (InterruptedException e) {
@@ -318,6 +304,35 @@ public final class NativeRunner {
             throw e;
         }
         return runs;
+    }
+
+    /** Feeds the first process with the objects of the previous stage; without input, closes its standard input. */
+    private Thread startWriter(List<ProcessBuilder> builders, Charset charset, Process first, ExecutionContext context,
+                               Source input) {
+        if (input != null) {
+            ShellIo io = context.io();
+            return Thread.ofVirtual().name("powerj-stdin").start(() -> writeObjects(input, first, charset, io));
+        }
+        if (builders.getFirst().redirectInput() == ProcessBuilder.Redirect.PIPE) {
+            closeQuietly(first.getOutputStream());
+        }
+        return null;
+    }
+
+    /** The threads that read the standard output of the last process and the standard error of each one. */
+    private List<Thread> startReaders(List<ProcessBuilder> builders, List<Charset> charsets, List<Process> processes,
+                                      ExecutionContext context, Pipe output) {
+        List<Thread> readers = new ArrayList<>();
+        if (builders.getLast().redirectOutput() == ProcessBuilder.Redirect.PIPE) {
+            Consumer<String> lines = output != null ? output::put : context.sink()::accept;
+            readers.add(pump(processes.getLast().getInputStream(), charsets.getLast(), lines));
+        }
+        for (int i = 0; i < processes.size(); i++) {
+            if (builders.get(i).redirectError() == ProcessBuilder.Redirect.PIPE && !builders.get(i).redirectErrorStream()) {
+                readers.add(pump(processes.get(i).getErrorStream(), charsets.get(i), context.errors()));
+            }
+        }
+        return readers;
     }
 
     /**
@@ -509,7 +524,7 @@ public final class NativeRunner {
         return Duration.ofNanos(System.nanoTime() - startNanos);
     }
 
-    private static void closeQuietly(OutputStream stream) {
+    private static void closeQuietly(java.io.Closeable stream) {
         try {
             stream.close();
         } catch (IOException _) {

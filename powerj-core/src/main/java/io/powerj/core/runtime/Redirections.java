@@ -3,6 +3,7 @@ package io.powerj.core.runtime;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Optional;
 
@@ -40,7 +41,13 @@ public record Redirections(Optional<NativeRunner.FileTarget> out, Optional<Nativ
         if (last == null) {
             return Optional.empty();
         }
-        Path file = session.currentDirectory().resolve(Values.text(evaluator.argument(last.target())));
+        String name = Values.text(evaluator.argument(last.target()));
+        Path file;
+        try {
+            file = session.currentDirectory().resolve(name);
+        } catch (InvalidPathException e) {
+            throw new PjException(PjError.of(Messages.get("file.writeFailed", name, e.getReason()), e)); // `> a?b` on Windows
+        }
         return Optional.of(new NativeRunner.FileTarget(file, last.append()));
     }
 
@@ -50,19 +57,29 @@ public record Redirections(Optional<NativeRunner.FileTarget> out, Optional<Nativ
     }
 
     /**
-     * The same redirections for a pipeline whose stages all write the errors file: {@code 2>} is truncated once, here,
-     * then every process appends to it.
+     * The errors file of a statement, truncated now if it was opened with {@code 2>}, and in append mode from here on:
+     * everything the statement writes to it, a blocking error included, adds a line (audit v2, R-05). Without a file,
+     * or already appending, the target is returned as it is.
      */
-    Redirections withSharedErrors() {
+    static Optional<NativeRunner.FileTarget> truncatedOnce(Optional<NativeRunner.FileTarget> err) {
         if (err.isEmpty() || err.get().append()) {
-            return this;
+            return err;
         }
         try {
             Files.writeString(err.get().file(), "", StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new PjException(PjError.of(Messages.get("file.writeFailed", err.get().file(), e.getMessage()), e));
         }
-        return new Redirections(out, Optional.of(new NativeRunner.FileTarget(err.get().file(), true)));
+        return Optional.of(new NativeRunner.FileTarget(err.get().file(), true));
+    }
+
+    /**
+     * The same redirections for a pipeline whose stages all write the errors file: {@code 2>} is truncated once, here,
+     * then every process appends to it.
+     */
+    Redirections withSharedErrors() {
+        Optional<NativeRunner.FileTarget> shared = truncatedOnce(err);
+        return shared == err ? this : new Redirections(out, shared);
     }
 
     /** What the stages that are not the last one see: their values go to the next stage, not to a file. */

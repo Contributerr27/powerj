@@ -10,6 +10,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 import java.util.function.Function;
 
 import io.powerj.api.Bytes;
@@ -19,6 +20,7 @@ import io.powerj.api.Language;
 import io.powerj.api.Span;
 import io.powerj.core.error.PjException;
 import io.powerj.core.i18n.Messages;
+import io.powerj.text.DisplayWidth;
 import io.powerj.text.Formats;
 import io.powerj.text.RecordView;
 
@@ -111,6 +113,10 @@ public final class OutputFormatter implements AutoCloseable {
     }
 
     public void accept(Object value) {
+        if (Thread.currentThread().isInterrupted()) {
+            // Ctrl+C: a value that never ends (IntStream.range(0, MAX), an endless iterator) would be displayed to its end.
+            throw new CancellationException();
+        }
         if (value instanceof Path path) {
             line(path.toString()); // a Path is also an Iterable<Path>
             return;
@@ -192,7 +198,7 @@ public final class OutputFormatter implements AutoCloseable {
         for (int i = 0; i < cells.length; i++) {
             Column column = columns.get(i);
             Object cell = column.reader().apply(value);
-            cells[i] = cell(cell, column.bytes());
+            cells[i] = tableCell(cell(cell, column.bytes()));
             highlights.add(value instanceof Record record ? highlights(cell, column.highlight(), record) : null);
         }
         Row row = new Row(cells, highlights);
@@ -223,14 +229,14 @@ public final class OutputFormatter implements AutoCloseable {
         widths = new int[n];
         rightAligned = new boolean[n];
         for (int i = 0; i < n; i++) {
-            widths[i] = columns.get(i).name().length();
+            widths[i] = DisplayWidth.of(columns.get(i).name());
             Class<?> t = columns.get(i).type();
             rightAligned[i] = columns.get(i).bytes() || Number.class.isAssignableFrom(t)
                     || (t.isPrimitive() && t != boolean.class && t != char.class);
         }
         for (Row row : sample) {
             for (int i = 0; i < n; i++) {
-                widths[i] = Math.max(widths[i], row.cells()[i].length());
+                widths[i] = Math.max(widths[i], DisplayWidth.of(row.cells()[i]));
             }
         }
         fitToWidth();
@@ -238,7 +244,7 @@ public final class OutputFormatter implements AutoCloseable {
         String[] rule = new String[n];
         for (int i = 0; i < n; i++) {
             header[i] = columns.get(i).name();
-            rule[i] = "-".repeat(Math.min(header[i].length(), widths[i]));
+            rule[i] = "-".repeat(Math.min(DisplayWidth.of(header[i]), widths[i]));
         }
         printRow(new Row(header));
         printRow(new Row(rule));
@@ -269,10 +275,10 @@ public final class OutputFormatter implements AutoCloseable {
         var line = new StringBuilder();
         for (int i = 0; i < cells.length; i++) {
             String text = truncate(cells[i], widths[i]);
-            String padding = " ".repeat(widths[i] - text.length());
+            String padding = " ".repeat(Math.max(0, widths[i] - DisplayWidth.of(text)));
             // the ellipsis of a truncated cell is never highlighted
             String shown = highlight(text, row.highlights().get(i),
-                    text.length() < cells[i].length() ? text.length() - 1 : text.length());
+                    !text.equals(cells[i]) ? text.length() - 1 : text.length());
             boolean last = i == cells.length - 1;
             if (rightAligned[i]) {
                 line.append(padding).append(shown);
@@ -290,18 +296,27 @@ public final class OutputFormatter implements AutoCloseable {
     }
 
     private static String truncate(String text, int width) {
-        return text.length() <= width ? text : text.substring(0, Math.max(0, width - 1)) + "…";
+        return DisplayWidth.truncate(text, width);
+    }
+
+    /** A value in a cell of a table: on one line, the layout of the table cannot hold a line break or a tab. */
+    static String tableCell(String text) {
+        if (text.indexOf('\n') < 0 && text.indexOf('\r') < 0 && text.indexOf('\t') < 0) {
+            return text;
+        }
+        // one character for one, so that the positions of the highlights are still right
+        return text.replace('\n', '⏎').replace('\r', ' ').replace('\t', ' ');
     }
 
     private void listRecord(Record record) {
         List<RecordView.Component> components = RecordView.of(record.getClass()).components();
-        int nameWidth = components.stream().mapToInt(c -> c.name().length()).max().orElse(0);
+        int nameWidth = components.stream().mapToInt(c -> DisplayWidth.of(c.name())).max().orElse(0);
         for (RecordView.Component c : components) {
             Column column = column(c);
             Object value = column.reader().apply(record);
             String text = cell(value, c.bytes());
             text = highlight(text, highlights(value, column.highlight(), record), text.length());
-            out.println(("%-" + nameWidth + "s : %s").formatted(c.name(), text));
+            out.println(DisplayWidth.padEnd(c.name(), nameWidth) + " : " + text);
         }
         out.println();
     }
@@ -310,11 +325,11 @@ public final class OutputFormatter implements AutoCloseable {
         endTable();
         String key = Messages.get("table.key");
         String value = Messages.get("table.value");
-        int keyWidth = Math.max(key.length(),
-                map.keySet().stream().mapToInt(k -> Values.text(k).length()).max().orElse(0));
-        out.println(("%-" + keyWidth + "s  %s").formatted(key, value));
-        out.println(("%-" + keyWidth + "s  %s").formatted("-".repeat(key.length()), "-".repeat(value.length())));
-        map.forEach((k, v) -> out.println(("%-" + keyWidth + "s  %s").formatted(Values.text(k), cell(v, false))));
+        int keyWidth = Math.max(DisplayWidth.of(key),
+                map.keySet().stream().mapToInt(k -> DisplayWidth.of(Values.text(k))).max().orElse(0));
+        out.println(DisplayWidth.padEnd(key, keyWidth) + "  " + value);
+        out.println(DisplayWidth.padEnd("-".repeat(DisplayWidth.of(key)), keyWidth) + "  " + "-".repeat(DisplayWidth.of(value)));
+        map.forEach((k, v) -> out.println(DisplayWidth.padEnd(Values.text(k), keyWidth) + "  " + cell(v, false)));
     }
 
     /** Table columns for this type, or {@code null} if it is displayed as a list. */

@@ -14,6 +14,7 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import io.powerj.api.Collected;
 import io.powerj.api.Row;
 import io.powerj.core.error.PjException;
 import io.powerj.core.java.JavaClasses;
@@ -24,6 +25,7 @@ import io.powerj.core.lang.Ast;
 import io.powerj.core.lang.ExpressionParser;
 import io.powerj.core.runtime.CommandCatalog;
 import io.powerj.core.runtime.Resolved;
+import io.powerj.core.runtime.ShellLists;
 
 /**
  * What an expression denotes, found without running it (FR-24): the type of a variable, of a property by its
@@ -255,6 +257,25 @@ final class TypeInference {
                 .orElse(new TypeInfo.Unknown());
     }
 
+    /**
+     * The lists of the JDK that hold their elements: reading them runs no other code. A wrapper of {@code java.base}
+     * ({@code Collections.unmodifiableList}, {@code synchronizedList}, a {@code subList} view) delegates to the list it wraps,
+     * which may be lazy or a third party's, so it is not on the list (review of #219).
+     */
+    private static final java.util.Set<String> MATERIALISED = java.util.Set.of("java.util.ArrayList", "java.util.LinkedList",
+            "java.util.Vector", "java.util.Stack", "java.util.Arrays$ArrayList", "java.util.ImmutableCollections$ListN",
+            "java.util.ImmutableCollections$List12", "java.util.concurrent.CopyOnWriteArrayList");
+
+    /**
+     * The value, if completion may call methods on it ({@code isEmpty}, {@code getFirst}, {@code get}): a list of the JDK that
+     * holds its elements, a list that the shell made ({@link ShellLists}), or a {@code Collected}. Another list could run code
+     * while the user types (review C-23); it counts as unknown.
+     */
+    private static Object readable(Object value) {
+        return value instanceof Collected<?> || ShellLists.isOne(value)
+                || value != null && MATERIALISED.contains(value.getClass().getName()) ? value : null;
+    }
+
     /** The element that {@code *.} applies to: of a list, of an array, or the value itself. */
     static TypeInfo elementOf(TypeInfo target) {
         return elementOf(target, null);
@@ -264,7 +285,7 @@ final class TypeInference {
     private static TypeInfo elementOf(TypeInfo target, Ast.Expression index) {
         return switch (target) {
             case TypeInfo.ListOf(var element) -> TypeInfo.instance(element);
-            case TypeInfo.Instance(var type, var value) when value instanceof List<?> list && !list.isEmpty() -> {
+            case TypeInfo.Instance(var type, var value) when readable(value) instanceof List<?> list && !list.isEmpty() -> {
                 Object element = list.getFirst();
                 if (index instanceof Ast.Literal(var position) && position instanceof Integer i) {
                     int at = i < 0 ? list.size() + i : i;

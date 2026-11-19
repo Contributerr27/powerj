@@ -52,6 +52,33 @@ public final class NativeCommands {
     }
 
     /**
+     * Is {@code name} a program of the {@code PATH}? Answered from the names of the last scan (at most one scan per
+     * {@value #TTL_MILLIS} ms), not from the file system: the highlighting asks for every word at every keystroke (audit v2,
+     * S-08). On Windows the case of a name does not matter, as for the file system.
+     */
+    public synchronized boolean has(Map<String, String> environment, String name) {
+        Set<String> names = names(environment);
+        if (!windows) {
+            return names.contains(name);
+        }
+        if (lowered == null || loweredFrom != names) {
+            Set<String> copy = new java.util.HashSet<>();
+            names.forEach(n -> copy.add(n.toLowerCase(Locale.ROOT)));
+            lowered = copy;
+            loweredFrom = names;
+        }
+        String lower = name.toLowerCase(Locale.ROOT);
+        // git, or git.exe: Windows finds a program both ways (review of #219)
+        return lowered.contains(lower) || fileNames.contains(lower);
+    }
+
+    /** On Windows, the file names of the last scan with their extension, in lower case. */
+    private Set<String> fileNames = Set.of();
+
+    private Set<String> lowered;
+    private Set<String> loweredFrom;
+
+    /**
      * The names found by the last scan, without scanning again: empty until completion or highlighting has asked for
      * them. For what must never wait for the {@code PATH}, such as the hint of an error.
      */
@@ -62,6 +89,7 @@ public final class NativeCommands {
     private Set<String> scan(String path, String pathext) {
         List<String> extensions = List.of(pathext.toLowerCase(Locale.ROOT).split(";"));
         Set<String> names = new TreeSet<>();
+        Set<String> withExtensions = new java.util.HashSet<>();
         for (String entry : path.split(Pattern.quote(windows ? ";" : ":"))) {
             if (entry.isBlank()) {
                 continue;
@@ -82,6 +110,7 @@ public final class NativeCommands {
                         int dot = name.lastIndexOf('.');
                         if (dot > 0 && extensions.contains(name.substring(dot).toLowerCase(Locale.ROOT))) {
                             names.add(name.substring(0, dot));
+                            withExtensions.add(name.toLowerCase(Locale.ROOT));
                         }
                     } else if (Files.isRegularFile(file) && Files.isExecutable(file)) {
                         names.add(name);
@@ -91,6 +120,7 @@ public final class NativeCommands {
                 // unreadable directory: ignored
             }
         }
+        fileNames = withExtensions;
         return Collections.unmodifiableSortedSet((TreeSet<String>) names);
     }
 }

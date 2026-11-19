@@ -33,7 +33,7 @@ import io.powerj.fs.Host;
  * <p>
  * Notes on the surprising ones: {@code items --fail | count} succeeds although an error was reported (the status is the
  * one of the last stage); {@code 1 < 2 && 2 < 3} is two statements chained, not a boolean; {@code !true} is a command
- * name; {@code which items} puts the module in parentheses, so a cmdlet with no module shows {@code ((no module))};
+ * name; {@code which items} puts the module in parentheses, and a cmdlet with no module shows {@code (no module)} (#175);
  * a syntax error is thrown to the caller, which is the supervisor of the shell.
  */
 class InterpreterCharacterizationTest {
@@ -154,7 +154,7 @@ class InterpreterCharacterizationTest {
                     "[Math has no static field NOPE]", false, null, null),
             row("1 +",
                     "",
-                    "[]", true, null, "io.powerj.core.error.PjException: syntax: incomplete expression"),
+                    "[]", false, null, "io.powerj.core.error.PjException: syntax: incomplete expression"), // $? is false (#175)
             row("eval { 1 + 2 }",
                     "3\n",
                     "[]", true, null, null),
@@ -174,7 +174,8 @@ class InterpreterCharacterizationTest {
                     "<tmp>\n",
                     "[]", true, null, null),
             row("which items",
-                    "items → cmdlet (" + FakeCmdlets.module() + ")\n",
+                    "items → cmdlet " + (FakeCmdlets.module().startsWith("(") ? FakeCmdlets.module()
+                            : "(" + FakeCmdlets.module() + ")") + "\n",
                     "[]", true, null, null),
             row("which nosuchcommand",
                     "",
@@ -201,14 +202,14 @@ class InterpreterCharacterizationTest {
                     "3\n",
                     "[]", true, null, null),
             row("items --help",
-                    "items — Produces test objects\nUsage: items [options]\n\nOptions:\n  -n, --count <value>  Number of objects\n      --fail           Reports a non-blocking error\n  --on-error <mode>    non-blocking errors: stop, continue (default) or silent\n\nOutput: Item (name, size)\nModule: " + FakeCmdlets.module() + "\n\nExamples:\n  items -n 2\n",
+                    "items — Produces test objects\nUsage: items [options]\n\nOptions:\n  -n, --count <n>    Number of objects\n      --fail         Reports a non-blocking error\n  --on-error <mode>  non-blocking errors: stop, continue (default) or silent\n\nOutput: Item (name, size)\nModule: " + FakeCmdlets.module() + "\n\nExamples:\n  items -n 2\n",
                     "[]", true, null, null),
             row("items --nosuchoption",
                     "",
                     "[items: unknown option --nosuchoption]", false, null, null),
             row("items -n abc",
                     "",
-                    "[items: invalid value for --count: 'abc']", false, null, null),
+                    "[items: invalid value for --count: \"abc\" (an integer expected)]", false, null, null),
             row("items | first",
                     "",
                     "[unknown command: first]", false, null, null),
@@ -247,7 +248,7 @@ class InterpreterCharacterizationTest {
                     "[]", true, null, null),
             row("1 / 0",
                     "",
-                    "[calculation failed: / by zero]", false, null, null));
+                    "[calculation failed: division by zero]", false, null, null));
     }
 
     /** Native commands: Linux and macOS (the existing tests of the interpreter cover Windows with its own commands). */

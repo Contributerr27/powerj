@@ -99,11 +99,15 @@ public final class ExpressionParser {
         if (parser.atEnd()) {
             throw new SyntaxException(Messages.get("syntax.emptyBlock"));
         }
-        Expression expression = parser.expression();
-        if (!parser.atEnd()) {
-            throw parser.unexpected(parser.peek());
+        try {
+            Expression expression = parser.expression();
+            if (!parser.atEnd()) {
+                throw parser.unexpected(parser.peek());
+            }
+            return expression;
+        } catch (SyntaxException e) {
+            throw e.withoutOffset(); // the positions are those of the block, not of the line
         }
-        return expression;
     }
 
     /** Parsed block {@code { source }}: lambda ({@code f -> …}) or {@code $_} block. */
@@ -437,13 +441,13 @@ public final class ExpressionParser {
         int open = paren.at();
         int close = Scanning.matching(input, open);
         if (close < 0) {
-            throw new SyntaxException(Messages.get("syntax.missingCloseParen", open + 1));
+            throw new SyntaxException(Messages.get("syntax.missingCloseParen", column(open)), open);
         }
         int contentStart = Scanning.skipBlanks(input, open + 1);
         if (contentStart == close) {
             throw new SyntaxException(Messages.get("syntax.emptyParentheses"));
         }
-        if (Lexer.expressionAt(input, contentStart, context)) {
+        if (Lexer.expressionAt(input, contentStart, context) && !Scanning.hasTopLevelPipe(input, contentStart, close)) {
             depth++;
             Expression inner = expression();
             depth--;
@@ -453,7 +457,12 @@ public final class ExpressionParser {
             }
             // value followed by a pipeline: ($l | where { … })
         }
-        Ast.Pipeline pipeline = Parser.pipeline(input.substring(open + 1, close), context);
+        Ast.Pipeline pipeline;
+        try {
+            pipeline = Parser.pipeline(input.substring(open + 1, close), context);
+        } catch (SyntaxException e) {
+            throw e.within(input, open + 1); // its positions are those of the group: move them into the line
+        }
         reset(close + 1);
         return new Ast.SubExpression(pipeline);
     }
@@ -470,7 +479,9 @@ public final class ExpressionParser {
                 && closing < input.length() && input.charAt(closing) == ']') {
             String type = input.substring(start, end);
             int after = Scanning.skipBlanks(input, closing + 1);
-            if (isOperandStart(after) && (PRIMITIVES.contains(type) || Character.isUpperCase(lastPart(type).charAt(0)))) {
+            String simpleName = lastPart(type); // empty for "[a.] x", which is not a type
+            if (isOperandStart(after) && (PRIMITIVES.contains(type)
+                    || !simpleName.isEmpty() && Character.isUpperCase(simpleName.charAt(0)))) {
                 reset(closing + 1);
                 return new Ast.Cast(type, unary());
             }
@@ -495,7 +506,7 @@ public final class ExpressionParser {
     private Expression block(Tok brace) {
         int close = Scanning.matching(input, brace.at());
         if (close < 0) {
-            throw new SyntaxException(Messages.get("syntax.unclosedBlock", brace.at() + 1));
+            throw new SyntaxException(Messages.get("syntax.unclosedBlock", column(brace.at())), brace.at());
         }
         String source = input.substring(brace.at() + 1, close);
         reset(close + 1);
@@ -540,10 +551,10 @@ public final class ExpressionParser {
 
     private SyntaxException unexpected(Tok token) {
         if (isSymbol(token, "=")) {
-            return new SyntaxException(Messages.get("syntax.equalsInExpression", token.at() + 1));
+            return new SyntaxException(Messages.get("syntax.equalsInExpression", column(token.at())), token.at());
         }
         String text = input.substring(token.at(), token.end());
-        return new SyntaxException(Messages.get("syntax.unexpectedAt", text, token.at() + 1));
+        return new SyntaxException(Messages.get("syntax.unexpectedAt", text, column(token.at())), token.at());
     }
 
     /**
@@ -640,7 +651,7 @@ public final class ExpressionParser {
             end++;
         }
         if (end == start) {
-            throw new SyntaxException(Messages.get("syntax.variableNameExpected", dollar + 1));
+            throw new SyntaxException(Messages.get("syntax.variableNameExpected", column(dollar)), dollar);
         }
         return new Variable(input.substring(start, end), dollar, end);
     }
@@ -677,20 +688,28 @@ public final class ExpressionParser {
         } catch (NumberFormatException _) {
             throw new SyntaxException(Messages.get("syntax.numberTooLarge", digits));
         }
-        Object value = Units.parse(digits + suffix).orElseThrow(() -> new SyntaxException(
-                Messages.get("syntax.invalidNumber", digits + suffix)));
+        Object value;
+        try {
+            value = Units.parse(digits + suffix).orElseThrow(() -> new SyntaxException(
+                    Messages.get("syntax.invalidNumber", digits + suffix)));
+        } catch (ArithmeticException _) {
+            throw new SyntaxException(Messages.get("syntax.numberTooLarge", digits + suffix)); // 200000d does not fit a Duration
+        }
         return new Value(value, start, end);
     }
 
     private Lexer.Scanned<Character> character(int open) {
         int at = open + 1;
         if (at >= input.length()) {
-            throw new SyntaxException(Messages.get("syntax.unclosedCharacter", open + 1));
+            throw new SyntaxException(Messages.get("syntax.unclosedCharacter", column(open)), open);
         }
         char value = input.charAt(at++);
+        if (Character.isHighSurrogate(value) && at < input.length() && Character.isLowSurrogate(input.charAt(at))) {
+            throw new SyntaxException(Messages.get("syntax.characterOutsideBmp", column(open)), open); // a char holds half of it
+        }
         if (value == '\\') {
             if (at >= input.length()) {
-                throw new SyntaxException(Messages.get("syntax.unclosedCharacter", open + 1));
+                throw new SyntaxException(Messages.get("syntax.unclosedCharacter", column(open)), open);
             }
             char e = input.charAt(at++);
             value = switch (e) {
@@ -707,22 +726,26 @@ public final class ExpressionParser {
                     if (at + 4 > input.length()) {
                         throw new SyntaxException(Messages.get("syntax.incompleteUnicodeEscape"));
                     }
-                    try {
-                        char u = (char) Integer.parseInt(input.substring(at, at + 4), 16);
-                        at += 4;
-                        yield u;
-                    } catch (NumberFormatException _) {
+                    int u = Lexer.hex4(input.substring(at, at + 4));
+                    if (u < 0) {
                         throw new SyntaxException(Messages.get("syntax.invalidUnicodeEscape", input.substring(at, at + 4)));
                     }
+                    at += 4;
+                    yield (char) u;
                 }
                 default -> throw new SyntaxException(Messages.get("syntax.unknownEscape", e));
             };
         } else if (value == '\'') {
-            throw new SyntaxException(Messages.get("syntax.emptyCharacter", open + 1));
+            throw new SyntaxException(Messages.get("syntax.emptyCharacter", column(open)), open);
         }
         if (at >= input.length() || input.charAt(at) != '\'') {
-            throw new SyntaxException(Messages.get("syntax.characterQuotes", open + 1));
+            throw new SyntaxException(Messages.get("syntax.characterQuotes", column(open)), open);
         }
         return new Lexer.Scanned<>(value, at + 1);
+    }
+
+    /** The position that a message gives: the column in characters, not in UTF-16 units (an emoji is one). */
+    private int column(int index) {
+        return input.codePointCount(0, Math.min(index, input.length())) + 1;
     }
 }

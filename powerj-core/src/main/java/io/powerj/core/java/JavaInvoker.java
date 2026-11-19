@@ -11,7 +11,9 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,13 +46,16 @@ public final class JavaInvoker {
             Map<String, Boolean> seen = new LinkedHashMap<>();
             for (Class<?> t : Members.accessibleTypes(type)) {
                 for (Method m : t.getMethods()) {
-                    if (!Modifier.isStatic(m.getModifiers()) && Members.isAccessible(m.getDeclaringClass())
-                            && seen.putIfAbsent(signature(m), true) == null) {
+                    // The name and the full types of the parameters: foo(java.util.Date) and foo(java.sql.Date) are two methods.
+                    String identity = m.getName() + Arrays.toString(m.getParameterTypes());
+                    if (!Modifier.isStatic(m.getModifiers()) && JavaClasses.callable(m)
+                            && seen.putIfAbsent(identity, true) == null) {
                         byName.computeIfAbsent(m.getName(), _ -> new ArrayList<>()).add(m);
                     }
                 }
             }
-            return byName;
+            byName.replaceAll((_, methods) -> List.copyOf(methods));
+            return Collections.unmodifiableMap(byName); // shared by every caller, the completion's included
         }
     };
 
@@ -90,7 +95,7 @@ public final class JavaInvoker {
             Map<String, List<Method>> declared = new HashMap<>();
             Map<String, List<Method>> inherited = new HashMap<>();
             for (Method m : type.getMethods()) {
-                if (Modifier.isStatic(m.getModifiers()) && JavaClasses.accessible(m.getDeclaringClass())) {
+                if (Modifier.isStatic(m.getModifiers()) && JavaClasses.callable(m)) {
                     inherited.computeIfAbsent(m.getName(), _ -> new ArrayList<>()).add(m);
                     if (m.getDeclaringClass() == type) {
                         declared.computeIfAbsent(m.getName(), _ -> new ArrayList<>()).add(m);
@@ -142,6 +147,9 @@ public final class JavaInvoker {
     static RuntimeException javaException(Throwable cause) {
         if (cause instanceof PjException || cause instanceof CancellationException) {
             return (RuntimeException) cause; // thrown by a { } block called from Java
+        }
+        if (Cancellation.isInterruption(cause)) {
+            return Cancellation.cancelled(); // Ctrl+C reached a blocking call: the command is being stopped (#165)
         }
         String message = cause.getMessage();
         return new PjException(PjError.of(message == null ? cause.getClass().getName()

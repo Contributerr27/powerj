@@ -1158,6 +1158,212 @@ this section only says where things stood when 0.2.0 was prepared. Phases 1 to 5
   (the output is incomplete); the chunks of a parallel `grep` interleave between files above 1 000 matches, which FR-64 and the
   help of `-p` now say.
 
+### Fixed (Ctrl+C survives an interrupted Java call, [#165](https://github.com/yp44/powerj/issues/165))
+- **Ctrl+C is no longer lost when a Java method blocks** (audit v2, R-01; FR-03, FR-57). `Thread.sleep`,
+  `BlockingQueue.take`, `Process.waitFor`… throw `InterruptedException` **and clear the interrupt flag**; `JavaInvoker` made an
+  ordinary error of it, so `Thread.sleep(60000); rm -rf build` + Ctrl+C ran the `rm` and ended in `Success`, and the loop of
+  a `map { Thread.sleep(500); $_ }` went on after each Ctrl+C. An `InterruptedException` or a `ClosedByInterruptException`
+  thrown by a method, a getter or a block called from Java now sets the flag again and ends the line as a cancellation
+  (`java.Cancellation`). `Interpreter.execute` also tests the flag before each statement, so a line abandoned by a second
+  Ctrl+C stops at its next statement instead of running the rest. Tests: `JavaCallCancellationTest`, `PropertyReadTest`.
+### Fixed (every primitive option, and a Params record checked at registration, [#166](https://github.com/yp44/powerj/issues/166))
+- **A `float`, `short`, `byte` or `char` option no longer breaks its cmdlet on every call** (audit v2, R-02). `OptionBinder`
+  had no default for these primitives (`null`, so `Constructor.newInstance` threw an `IllegalArgumentException` that nothing
+  caught) and no conversion: the cmdlet failed even when the option was not given. Every primitive now defaults to its zero
+  (`Array.get(Array.newInstance(type, 1), 0)`); `float`, `short`, `byte` and `char` (exactly one character) are converted like
+  the other numbers, and a value out of range is an "invalid value" error. `construct` also catches `IllegalArgumentException`.
+- **A faulty parameter record is reported when its cmdlet is registered**, not one failed call at a time: two components
+  with the same short name, long name or position, or a positional `List` that is not the last positional, give one
+  `module.cmdletIgnored` warning that names the component, and the cmdlet is left out. The type of an option stays free (the
+  maintainer's decision in the review of #219): any type that is not converted from text receives a value that already is an
+  instance of it, as before (`OptionBinder.validate`, called by `CmdletRegistry`). README, "Writing your own cmdlet": the
+  types converted from text.
+  Tests: `OptionBinderTest`, `ParametersValidationTest`.
+### Fixed (a mistake of the user is never an "internal error", [#167](https://github.com/yp44/powerj/issues/167))
+- **Overflowing literals and indexes are syntax errors** (audit v2, R-03). `200000d` and `99999999tb` ended in an
+  `ArithmeticException` from `Units.parse` and `"$a[99999999999]"` in a `NumberFormatException`; both are now
+  `number too large`. A `--size 99999999tb` option is an invalid value, like any other.
+- **A long index is no longer truncated to an `int`** (R-04): `$l[4294967296]` returned `$l[0]`; it is now
+  `index [4294967296] out of bounds`.
+- **A map that refuses a key** (`$m[null]` on `Map.of()`, `$m[1]` on a `TreeMap` of strings) says
+  `this map does not accept the key …` instead of an internal `NullPointerException`/`ClassCastException`.
+- **`NaN` and the infinities with a `BigDecimal`** are an error that says so (`NumberFormatException` before); a
+  redirection to a path the file system refuses (`> a?b` on Windows, a NUL anywhere) is `cannot write to …` as for `cd`.
+- **Decimals compare as in Java** (R-15, FR-33): `0.0 == -0.0` is true, `NaN == NaN` is false, and `NaN` is neither less
+  nor greater than anything (it was `Double.compare`'s total order).
+- **`\u` takes four hexadecimal digits and nothing else** (`"\u+041"` was `A`), and a character outside the Basic
+  Multilingual Plane between single quotes (`'😀'`) has its own message.
+- **The preview** no longer shows a parser failure other than a syntax error as an internal error on each keystroke: it
+  logs it at `FINE` (the line is shortened by `LoggedLine`) and shows the line as incomplete; the "internal error" it still
+  shows for an evaluation failure is logged too.
+- **A fuzz test of the parser** (`ParserFuzzTest`: 60 000 lines made of the pieces of the language, fixed seed, 0.6 s; the seed
+  and the count can be changed with `-Dfuzz.seed` and `-Dfuzz.runs`) states that only a `SyntaxException` comes out. It found,
+  and this ticket fixes, a `StringIndexOutOfBoundsException` for `[null.] 1`. Tests: `UserMistakesTest`, `ParserFuzzTest`.
+
+### Fixed (a blocking error of the last stage no longer truncates the `2>` file, [#168](https://github.com/yp44/powerj/issues/168))
+- **`items --fail | boom 2> e.txt` keeps both lines** (audit v2, R-05). `PipelineExecutor` truncated the file once and every
+  stage then appended, but `Interpreter.statement` reported a blocking error of the last stage with the original target,
+  which is not in append mode: the file was truncated again and only the last line stayed. `2>` is now truncated once by
+  the statement (`Redirections.truncatedOnce`) and everything it writes, a blocking error included, appends. Test:
+  `BlockingErrorRedirectionTest`; acceptance sheet `step-3.md`, row 21b.
+
+### Fixed (two modules whose names end with the same segment, and `mod-load` creating the built-in providers again, [#169](https://github.com/yp44/powerj/issues/169))
+- **`com.a.greet` and `org.b.greet` no longer share the qualified name `greet:greet`** (audit v2, R-06). The prefix was the
+  last segment of the module name and the second `putIfAbsent` was ignored: the warning said "available as greet:greet" and
+  that name ran the **first** module's cmdlet, so the second one could not be reached. The first module keeps `greet:`; a
+  module whose last segment is taken is qualified by its whole name (`org.b.greet:greet`), in the warning, in `mod-list` and
+  for the call (`CmdletRegistry.Registered.prefix`). FR-17 says so.
+- **`mod-load` creates only the providers of the module it loads** (B-08): `ServiceLoader.load(layer, …)` was iterated and
+  filtered afterwards, which instantiated every provider of the parent layers too, the built-in ones included, each time;
+  it now uses `stream()` and creates a provider only if it belongs to the layer.
+  Tests: `ModuleLoaderTest` (two modules, a provider counted at creation).
+### Decided (the consent to native access is a gate, [#170](https://github.com/yp44/powerj/issues/170))
+- **Decision: option 1, a gate** (audit v2, B-01; the recommendation of the ticket). The launcher now passes
+  `--illegal-native-access=deny` (`powerj-dist/pom.xml`). Only the modules that declare `Enable-Native-Access` were asked
+  for their consent, and with the JDK 25 default (`warn`) a module that left the attribute out could still load a
+  library or call the FFM API: the JVM printed a warning and nothing stopped it. A module of a layer loaded at run time has
+  native access only through `Controller.enableNativeAccess`, which `ModuleLoader` calls after the consent, so any other
+  call of a restricted method is an `IllegalCallerException` (`Illegal native access from module …`).
+  **Consequence:** a library that uses native access without declaring it breaks until its author adds the attribute
+  (`powerj-fx` declares it). The gate is the packaged launcher's: a JVM started by hand is in the `warn` mode.
+  ADR 0006 is amended, and the Javadoc of `NativeAccessPolicy`, FR-77 (§4.4) and `SECURITY.md` say the same thing.
+- **A smoke test of both roads** (`ci/smoke/native-access.sh`, in the CI on Linux and macOS): a jar without the attribute that
+  calls `System.loadLibrary` is refused; the same jar with `Enable-Native-Access: true` is refused until the line that the
+  refusal prints is in `config.properties`, and then reaches the loader. Checked by hand: with `--illegal-native-access=warn`
+  the first jar goes through. It is not in the Windows job, whose smoke tests are inline PowerShell (#183).
+
+### Fixed (Java interop, five small defects of `core.java`, [#171](https://github.com/yp44/powerj/issues/171))
+- **`import java.util.Map.Entry` works** (audit v2, R-07). `addImport` asked `Class.forName("java.util.Map.Entry")`, which
+  wants the binary name `Map$Entry`, while `find` already resolved nested classes: the import always ended in
+  `import.classNotFound`, `java.net.http.HttpResponse.BodyHandlers` too. Both now go through the same reading of a name as
+  written in the source (`JavaClasses.sourceName`).
+- **`Integer::parseInt` no longer copies every public method of `Integer` for each object** (R-22): `MethodReference.OfClass`
+  scanned `getMethods()` per call, with a rule of its own; it now asks `JavaInvoker.staticMethods`, found once per class,
+  the table that `invokeStatic` chooses from, so "there is a static method" and "it can be called" cannot disagree.
+- **The table of instance methods is immutable and tells overloads apart by their full types** (R-22):
+  `JavaInvoker.instanceMethods` handed out a mutable `LinkedHashMap` and de-duplicated on the *simple* names of the
+  parameters, so `foo(java.util.Date)` and `foo(java.sql.Date)` collapsed into one.
+- **`System.out.close()`, `System.err.close()` and `System.in.close()` are refused** like `System.setOut` (R-14): `CallPolicy`
+  promised to keep the streams and did not. Its Javadoc now says what it does not see (a `MethodHandle`, for example
+  `MethodHandles.publicLookup().findStatic(System.class, "exit", …)`) and that constructors are not asked: none of the Java
+  library's ends the JVM or replaces a stream, and `PreviewGuard` still sees them (the alternative of the ticket, narrowing the
+  Javadoc, was taken). Tests: `JavaClassesNamesTest`, `JavaInvokerTest`, `CallPolicyTest`.
+
+### Fixed (an abandoned line, an endless display, and the longest methods of the runtime, [#172](https://github.com/yp44/powerj/issues/172))
+- **A line abandoned by a second Ctrl+C no longer writes the state of the line that follows** (audit v2, S-02; FR-03). Its
+  thread goes on, and when it ended it reset the observer of the perf mode (cutting the measure of the line in progress),
+  set the blocking-error flag that `ScriptMode` reads, and overwrote `$?`, `$last` and `$errors`. Each line now runs in a scope
+  that holds its number (`Lines`, kept by the `Session`, passed on to the stage threads): the writes of a thread whose line
+  has been overtaken are ignored. Test: `StaleLineTest` (red with the guards off).
+- **Ctrl+C stops the display of a value that never ends** (S-03): `IntStream.range(0, Integer.MAX_VALUE)` typed at the prompt
+  was displayed to its end, and after an abandon the old thread kept writing on the terminal. `OutputFormatter.accept`
+  now throws a `CancellationException` when its thread is interrupted (the preview formats its values with the flag set
+  aside, since they are in memory already).
+- **No method of `core.runtime` is longer than 50 lines** (C-02): `PipelineExecutor.run` (84 lines) is `run`,
+  `runSingleNative`, `runPipeline` and `stageThread`; `PreviewMode.preview` (89) is `check`, `evaluate`, `format` and the
+  few lines that join them; `prepare` (55) and `NativeRunner.startGroup` (67) are split as well. The longest is now 48
+  lines. No change of behaviour: the characterization test and the tests of the pipeline and the preview are the guard.
+### Fixed (the table counts terminal columns, not UTF-16 units, [#174](https://github.com/yp44/powerj/issues/174))
+- **CJK names and emoji align in the table** (audit v2, U-04). `OutputFormatter` sized the columns with `String.length()`, so a
+  column of `日本語` (two terminal columns per character) or of emoji (two columns, two UTF-16 units) was misaligned and could
+  overflow the window, a truncation could cut a surrogate pair, and a cell with a line break or a tab broke the row. A new
+  `io.powerj.text.DisplayWidth` counts columns (East Asian Wide and Fullwidth and emoji count 2, combining marks, joiners and
+  controls 0), cuts on whole characters (`truncate`) and pads (`padEnd`); the table, the record list and the map use it. In a
+  table cell `\n` is shown as `⏎` and `\r`, `\t` as a space (character for character, so the highlights keep their
+  positions); a text shown whole keeps its line breaks. The characters whose width depends on the terminal (East Asian
+  Ambiguous) count 1. The grid and the exports are not concerned. Tests: `DisplayWidthTest`, `OutputFormatterTest`.
+
+### Fixed (what a long session accumulates: processes, descriptors, threads, [#173](https://github.com/yp44/powerj/issues/173))
+- **An unusable `POWERJ_NATIVE_ENCODING` no longer leaves processes behind** (audit v2, R-13). `startGroup` resolved the charsets
+  after `ProcessBuilder.startPipeline`: with `bogus`, `sleep 30 | cat` started both programs, then failed, and they were stopped
+  only if the output was a pipe. The charsets are resolved first, and whatever fails after the start stops the processes.
+  Test: `NativeCleanupTest`.
+- **A `DirectoryStream` is closed once read** (S-06, C-06): `ValueUnroller` closed a stream but not a `DirectoryStream` that was
+  displayed or piped, which kept a directory open; its Javadoc promised it. A `DirectoryStream` can be read only once, so closing
+  it takes nothing from anyone. Another `AutoCloseable` iterable or iterator is **not** closed: the user may hold it in a variable
+  and read it again (`$sc | first 1`, then `$sc.nextLine()`), and closing a `Scanner` closes what it reads, `System.in` maybe
+  (review of #219). Test: `ValueUnrollerTest`.
+- **Stopping a background job stops its whole process group** (S-07): `PosixJobs` sent `SIGTERM`, `SIGCONT` and `SIGKILL` to the
+  pid of the leader, so the processes it had started (the grandchildren of `make &`) survived. The first stage, the leader of
+  the group, is signalled as `-pid`, and still after it has ended (a script that forks and returns leaves its children in the
+  group; review of #219). This is what `Process.destroy()` of a job does; the `kill` cmdlet, which stops a pid through
+  `ProcessHandle`, still signals that pid only. Test: `PosixJobsTest`.
+- **`pipe`, `sigemptyset` and `sigfillset` report their `errno`** (R-16): they return -1 and set `errno`, which was read as an error
+  number ("pipe: error=-1, Unknown error -1" instead of `EMFILE`); they capture `errno` as `waitpid` does
+  (`PosixSpawn.describe`). **A NUL in an argument or an environment entry is refused** on Linux and macOS, as `ProcessBuilder`
+  and the Windows launcher do, instead of cutting the argument at the NUL. Test: `PosixSpawnTest`.
+- **The abandoned commands are counted** (S-06): a command abandoned by a second Ctrl+C keeps a 16 MB thread and, if it spins, a
+  core, and nothing showed it. `Supervisor.abandonedRunning()` counts those still alive and the prompt says so
+  (`n abandoned command(s) still running in the background`) until they end. Tests: `SupervisorTest`, `ReplLoopTest`.
+- **Not fixed, and why.** (2) A captured command whose program leaves a process in the background keeps the pipe open, and
+  the reader thread and its descriptor live until that process ends. On the CI of Linux and macOS the line then waits for the
+  end of the pipe (as the command substitution of a Unix shell does) and **Ctrl+C ends the line but not the reader**; in the
+  container where it was tried the JDK closes the pipe at the exit of the program and nothing is left, so the behaviour
+  depends on the system. Closing the streams of the process was tried and checked: **it does not wake a read that is
+  blocked** (Linux, platform and virtual threads), so it is not done; the only reliable way would be to start foreground programs
+  in a process group of their own and signal the group, which changes how the terminal's Ctrl+C reaches them and is left for a
+  decision. The test pins what holds everywhere: Ctrl+C ends the line (`NativeCleanupTest`). (4, Windows) The handles of the pipes
+  of a background job are created inheritable for the whole process, which a concurrent `ProcessBuilder.start()` could inherit;
+  the ticket marks it "to confirm on each system", it could not be reproduced or tested here (Linux only), and it is left as it
+  is rather than changed blind.
+### Changed (what the user is told when a line is wrong, [#175](https://github.com/yp44/powerj/issues/175))
+- **A syntax error shows where** (audit v2, U-03). `SyntaxException` and `PjError` carry an `offset`; the parser knows where each
+  token starts, the lexer and the expression parser give the place they already named. The shell prints the line and a `^`
+  under the place (`ErrorLocation`, correct after wide characters and emoji). The errors of a block (`{ … }`), which is parsed
+  alone and whose positions are those of the block, have no place rather than a wrong one. The "(position N)" of a message
+  counts characters, not UTF-16 units (an emoji was two). `ls | | x`, `1 2`, `ls |` have tests for `offset()`.
+- **`$?` is `false` after a line that does not parse** (U-03), as in bash and PowerShell (it kept the value of the line before);
+  the characterization row says so.
+- **Messages** (U-11, U-02, C-04): `which items` says `(no module)` and no longer `((no module))`; an `ExceptionInInitializerError`
+  says its class instead of "unusable class: null"; a division by zero is `division by zero` in the language of the user (it was
+  `/ by zero`, in English, in a French sentence); `operator.overflow.long` suggests `new java.math.BigInteger("…")`; `error.internal`
+  says where the log is; **Ctrl+C in `help`, `history` or `mod-load` is a cancellation**, not "help: null" (`invokeBuiltin` rethrows
+  `CancellationException`, #89).
+- **One style for the messages of the core** (C-04), written in `CONTRIBUTING.md` ("Language") and applied to `core.i18n` and
+  `core.lang`, English and French: user input in double quotes (it was three styles), "program" for a native command
+  (`program not found: x`), `(position N)` always at the end, one wording for `cast.failed` and `java.conversionFailed`. The
+  completion tag `[internal]` stays: it is a label, not a sentence. Tests updated for the new words. Tests: `LanguageErrorsTest`.
+
+### Changed (help and assistance, [#176](https://github.com/yp44/powerj/issues/176))
+- **`help <cmdlet>` shows what each option takes** (audit v2, U-05): `--parallel <n>`, `--size <size>`, `--since <duration>`,
+  `--out <path>`, `--mode {fast|safe}`, `--name <text>` instead of `<value>` for all (`OptionSpec.valueLabel`), and the usage line
+  lists the named options the command cannot run without, with their type (`probe [files...] --name <text> [options]`). The
+  optional `@Option(defaultValue)` of the ticket is **not** added: it changes the API and the ticket makes it optional; it waits for
+  the API window.
+- **Option errors say what was expected** (U-05): `invalid value for --size: "big" (an integer or a size such as 10kb expected)`;
+  an unknown short option names the long one that starts with the letter (`did you mean --output?`) or the short options that
+  exist; a missing positional is `missing required argument: <target>`, not "option --target".
+- **`help` and completion offer only what the shell can call** (B-08, R-22): the fields of a class were listed without the
+  accessibility filter that the methods had, and `MemberCompleter` filtered nothing for static members. `JavaClasses.callable` is
+  the one rule, shared by `Help`, `MemberCompleter` and `JavaInvoker` (its tables of static and instance methods).
+- **Completion calls no method on a list that is not the JDK's** (B-08): `TypeInference` called `isEmpty`, `getFirst` and `get` on
+  any `List` a variable held, so a lazy or third-party list ran while the user typed. Only a list of `java.base` or a
+  `Collected` is read.
+- **Highlighting does not look at the file system at each keystroke** (S-08): `Interpreter.commandKind` resolved every unknown
+  word on the whole `PATH` (on Windows, every entry times every `PATHEXT`). A bare word is now answered from the names found by
+  one scan of the `PATH`, kept 30 s (`CommandResolution.kind`, `NativeCommands.has`; the case of a name does not matter on Windows);
+  what runs is still decided on the file system. A word with a directory part is resolved as before.
+- **A short option named `?` or `.` no longer silences completion** (R-22): `ArgumentCompleter` built a regular expression from the letter.
+- **Groups nested in groups are parsed in linear time** (S-08, *confirmed by timing*): `((($x | a) | a) | a)` was parsed as an
+  expression, then again as a pipeline, at each level, so the work doubled with the depth (24 levels did not end in 10 s). A text
+  with a pipe at its top level (`Scanning.hasTopLevelPipe`) is a pipeline and goes straight to the pipeline parser.
+  Tests: `OptionBinderTest`, `HelpOptionsTest`, `HelpAccessibleMembersTest`, `TypeInferenceTest`, `HighlightKindTest`,
+  `CompletionOptionValuesTest`, `ParserTest`.
+
+### Fixed (review of the pull request of phase 3 of the audit v2, [#219](https://github.com/yp44/powerj/pull/219))
+- **The caret of a syntax error** is under the right character for an error inside the pipeline of a group `( … )` (its place
+  and its "(position N)" were those of the group), on an input of several lines (only the line of the error is shown), and
+  after a tab (kept in the padding) (#175).
+- **A module of one segment** (`greet`) whose name is the prefix of another module gets `greet-2:` (#169).
+- **The unroll closes only a `DirectoryStream`**, not a `Scanner` or another iterator the user may still hold (#173).
+- **The type of an option stays free**, as before #166 (the maintainer's decision); the other checks at registration stay.
+- **The group of a background job is signalled even after its leader has ended** (#173).
+- **The ellipsis of a truncated cell is never highlighted**, and a spacing mark (the vowel signs of Devanagari…) takes a column
+  (#174).
+- **Highlighting on Windows knows `git.exe` as well as `git`; completion reads only the JDK lists that hold their elements**,
+  not a wrapper (`Collections.unmodifiableList`) around a list that may be lazy; the lists the shell makes (captures, `[…]`,
+  `*.`) have a type of their own, `ShellLists`, which it reads (#176).
+
 ## [0.1.0] — never released (baseline)
 
 The functional baseline that 0.2.0 starts from; it was only ever built as `0.1.0-SNAPSHOT`.

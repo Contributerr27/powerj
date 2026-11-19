@@ -16,6 +16,7 @@ import io.powerj.core.command.Help;
 import io.powerj.core.command.CmdletRegistry;
 import io.powerj.core.command.ModuleLoader;
 import io.powerj.core.command.NativeAccessPolicy;
+import io.powerj.core.error.PjError;
 import io.powerj.core.error.PjException;
 import io.powerj.core.i18n.Messages;
 import io.powerj.core.lang.Ast.Statement;
@@ -168,12 +169,7 @@ public final class Interpreter implements CommandCatalog {
     /** Resolves a command name as execution would (FR-13), without launching anything. */
     @Override
     public CommandKind commandKind(String name) {
-        return switch (resolution.resolve(name, session)) {
-            case Resolved.BuiltinCall _ -> CommandKind.BUILTIN;
-            case Resolved.CmdletCall _ -> CommandKind.CMDLET;
-            case Resolved.NativeCall _ -> CommandKind.NATIVE;
-            case Resolved.Unknown _ -> CommandKind.UNKNOWN;
-        };
+        return resolution.kind(name, session);
     }
 
     /**
@@ -191,13 +187,23 @@ public final class Interpreter implements CommandCatalog {
      * @throws InterruptedException if the line was cancelled by Ctrl+C
      */
     public void execute(String line) throws InterruptedException {
+        long number = session.lines().begin(); // the line that Ctrl+C abandoned before this one is stale from now on
+        session.lines().run(number, () -> {
+            run(line, number);
+            return null;
+        });
+    }
+
+    private void run(String line, long number) throws InterruptedException {
         reporter.reset();
         long begin = System.nanoTime();
         Ast.Script script;
         try {
             script = Parser.parse(line, parseContext());
         } catch (SyntaxException e) {
-            throw new PjException(e.getMessage()); // a line that does not parse is an error to show, like any other
+            session.recordSuccess(false); // as in bash and PowerShell: a line that cannot be run has failed
+            // a line that does not parse is an error to show, like any other; the shell shows where
+            throw new PjException(PjError.of(e.getMessage()).at(e.offset()));
         }
         long parsed = System.nanoTime() - begin;
         LineMeasuring.Measurement measurement = perf.start(line, script, begin, parsed);
@@ -208,6 +214,9 @@ public final class Interpreter implements CommandCatalog {
             for (Ast.Step step : script.steps()) {
                 if (session.exitRequest().isPresent()) {
                     return;
+                }
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new CancellationException(); // Ctrl+C, or a line abandoned by a second Ctrl+C (#165)
                 }
                 boolean run = switch (step.connector()) {
                     case ALWAYS -> true;
@@ -223,7 +232,9 @@ public final class Interpreter implements CommandCatalog {
             cancelled = true;
             throw e;
         } finally {
-            observer = ExecutionObserver.NONE;
+            if (session.lines().isLatest(number)) {
+                observer = ExecutionObserver.NONE; // not the one of the line that runs now, if this line was abandoned
+            }
             measurement.finish(cancelled);
         }
     }
@@ -245,7 +256,10 @@ public final class Interpreter implements CommandCatalog {
     private boolean statement(Statement statement) throws InterruptedException {
         Optional<NativeRunner.FileTarget> errTarget = Optional.empty();
         try {
-            errTarget = Redirections.target(statement.pipeline(), RedirectedStream.ERR, evaluator, session);
+            // `2>` is truncated here, once for the whole statement: a blocking error reported at the end appends to the file
+            // instead of erasing the errors of the stages before it (R-05).
+            errTarget = Redirections.truncatedOnce(
+                    Redirections.target(statement.pipeline(), RedirectedStream.ERR, evaluator, session));
             Optional<NativeRunner.FileTarget> outTarget =
                     Redirections.target(statement.pipeline(), RedirectedStream.OUT, evaluator, session);
             var redirections = new Redirections(outTarget, errTarget);

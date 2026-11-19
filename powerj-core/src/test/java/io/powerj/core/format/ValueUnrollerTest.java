@@ -136,4 +136,59 @@ class ValueUnrollerTest {
     void elementsAreDeliveredInOrderAndNullsAreElements() {
         assertThat(unrolled(Arrays.asList(1, null, 3), DISPLAY)).containsExactly(1, null, 3);
     }
+
+    // --- what holds a resource: a DirectoryStream is closed once read, what the user may still hold is not (#173, review) ---
+
+    /** A directory stream: its iterator can be asked for once, so nobody can read it again after the unroll. */
+    private static final class FakeDirectoryStream implements java.nio.file.DirectoryStream<Path> {
+        boolean closed;
+
+        @Override
+        public Iterator<Path> iterator() {
+            return List.of(Path.of("a"), Path.of("b")).iterator();
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+    }
+
+    /** A stream that says when it is closed, under a Scanner the user keeps in a variable. */
+    private static final class TrackedInput extends java.io.ByteArrayInputStream {
+        boolean closed;
+
+        TrackedInput() {
+            super("one\ntwo\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+    }
+
+    @Test
+    void aDirectoryStreamIsClosedOnceReadAndEvenWhenTheConsumerFails() {
+        var listing = new FakeDirectoryStream();
+        assertThat(ValueUnroller.unroll(listing, DISPLAY, _ -> { })).isTrue();
+        assertThat(listing.closed).isTrue();
+
+        var failing = new FakeDirectoryStream();
+        assertThatThrownBy(() -> ValueUnroller.unroll(failing, DISPLAY, value -> {
+            throw new IllegalStateException("stop");
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(failing.closed).isTrue();
+    }
+
+    /** {@code $sc | first 1}, then {@code $sc.nextLine()}: closing the Scanner would close what it reads, System.in maybe. */
+    @Test
+    void anIteratorTheUserMayStillHoldIsNotClosed() {
+        var input = new TrackedInput();
+        var scanner = new java.util.Scanner(input);
+
+        assertThat(ValueUnroller.unroll(scanner, DISPLAY, _ -> { })).isTrue();
+
+        assertThat(input.closed).isFalse();
+    }
 }

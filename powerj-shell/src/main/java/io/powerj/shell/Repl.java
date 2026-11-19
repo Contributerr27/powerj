@@ -13,6 +13,7 @@ import org.jline.reader.UserInterruptException;
 import org.jline.terminal.Terminal;
 
 import io.powerj.core.BuildInfo;
+import io.powerj.core.error.ErrorLocation;
 import io.powerj.core.error.PjException;
 import io.powerj.core.runtime.Interpreter;
 import io.powerj.core.runtime.Outcome;
@@ -112,6 +113,10 @@ public final class Repl {
                 terminal.resume(); // a command abandoned with a second Ctrl+C may still hold the console
             }
             session.jobs().drainFinished().forEach(out::println); // FR-75: background jobs ended meanwhile
+            int stale = supervisor.abandonedRunning();
+            if (stale > 0) {
+                out.println(Messages.get("command.abandoned.running", stale)); // FR-57: they hold a thread, maybe a core
+            }
             out.flush();
             try {
                 line = editor.readLine(prompt.forJLine());
@@ -130,7 +135,12 @@ public final class Repl {
                 return List.of();
             })) {
                 case Outcome.Success _ -> { }
-                case Outcome.Failure(var error) -> errors.print(error.message());
+                case Outcome.Failure(var error) -> {
+                    errors.print(error.message());
+                    if (error.offset() >= 0) {
+                        ErrorLocation.show(line, error.offset()).forEach(errors::print); // the line and a ^ under the place
+                    }
+                }
                 case Outcome.Cancelled() -> errors.print("^C");
                 case Outcome.Abandoned(var commandLine) ->
                         errors.print(Messages.get("command.abandoned", commandLine));

@@ -17,7 +17,8 @@ import io.powerj.api.Collected;
  * One place for the rule that used to be written four times, with drifts (review C-07), among them a stream that was
  * left open when {@code *.} unrolled it.
  * <p>
- * A stream is always closed once it was read, even when {@code each} throws. A {@link Path} (which is an
+ * A stream is always closed once it was read, even when {@code each} throws, and so is a {@code DirectoryStream}, which can be
+ * read only once; another {@code AutoCloseable} iterable or iterator ({@code Scanner}) is left to whoever holds it. A {@link Path} (which is an
  * {@code Iterable<Path>}), a {@code String}, a {@code Map}, a record are never unrolled.
  */
 public final class ValueUnroller {
@@ -44,6 +45,24 @@ public final class ValueUnroller {
     }
 
     /**
+     * Closes a {@link java.nio.file.DirectoryStream} once it was read: its iterator can be asked for once, so nobody can read
+     * it again, and it holds a directory open. Another {@code AutoCloseable} iterable or iterator is left open: the user may
+     * hold it in a variable and read it again ({@code $sc | first 1}, then {@code $sc.nextLine()}), and closing a
+     * {@code Scanner} closes what it reads, {@code System.in} maybe (review of #173).
+     */
+    private static void closeIfSingleUse(Object value) {
+        if (value instanceof java.nio.file.DirectoryStream<?> resource) {
+            try {
+                resource.close();
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception _) {
+                // the values were read; a failure to close them is not the user's line
+            }
+        }
+    }
+
+    /**
      * Passes each element of {@code value} to {@code each}.
      *
      * @return {@code true} if {@code value} is something that unrolls (even to nothing: an empty list); {@code false}
@@ -60,7 +79,13 @@ public final class ValueUnroller {
             case Collected<?> list when mode.keepCollected -> {
                 return false;
             }
-            case Iterable<?> items -> items.forEach(each);
+            case Iterable<?> items -> {
+                try {
+                    items.forEach(each);
+                } finally {
+                    closeIfSingleUse(items); // a DirectoryStream holds a directory open
+                }
+            }
             case BaseStream<?, ?> stream -> { // Stream, and IntStream, LongStream, DoubleStream (boxed elements)
                 try (stream) {
                     stream.iterator().forEachRemaining(each);

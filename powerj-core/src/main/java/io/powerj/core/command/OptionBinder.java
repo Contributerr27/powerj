@@ -1,5 +1,6 @@
 package io.powerj.core.command;
 
+import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.ParameterizedType;
@@ -54,6 +55,48 @@ public final class OptionBinder {
         public boolean isPath() {
             Option option = component.getAnnotation(Option.class);
             return option != null && option.path();
+        }
+
+        /** The type of one value of the option: the element of a list, the component itself otherwise. */
+        public Class<?> valueType() {
+            return isList() ? elementType(component.getGenericType()) : component.getType();
+        }
+
+        /**
+         * What the help puts after the name of the option: {@code <n>}, {@code <size>}, {@code <duration>}, {@code <path>},
+         * {@code {fast|safe}} for an enum, {@code <text>}, {@code <value>} for what is not one of these (audit v2, U-05).
+         */
+        public String valueLabel() {
+            Class<?> type = valueType();
+            if (type.isEnum()) {
+                return Arrays.stream(type.getEnumConstants()).map(c -> ((Enum<?>) c).name().toLowerCase(Locale.ROOT))
+                        .collect(java.util.stream.Collectors.joining("|", "{", "}"));
+            }
+            return switch (type.getSimpleName()) {
+                case "int", "Integer", "short", "Short", "byte", "Byte" -> "<n>";
+                case "long", "Long" -> "<size>";
+                case "double", "Double", "float", "Float" -> "<number>";
+                case "Duration" -> "<duration>";
+                case "Path" -> "<path>";
+                case "char", "Character" -> "<char>";
+                case "String" -> "<text>";
+                default -> Messages.get("help.option.value");
+            };
+        }
+
+        /** What an invalid value should have been, in words: "an integer", "a duration such as 30s"… */
+        String expected() {
+            Class<?> type = valueType();
+            return Messages.get(switch (type.getSimpleName()) {
+                case "int", "Integer" -> "option.expected.integer";
+                case "short", "Short" -> "option.expected.short";
+                case "byte", "Byte" -> "option.expected.byte";
+                case "long", "Long" -> "option.expected.size";
+                case "double", "Double", "float", "Float" -> "option.expected.number";
+                case "char", "Character" -> "option.expected.char";
+                case "Path" -> "option.expected.path";
+                default -> "option.expected.value";
+            });
         }
 
         /** Displayed form: {@code -r, --recurse}. */
@@ -223,7 +266,8 @@ public final class OptionBinder {
             for (int i = 0; i < specs.size(); i++) {
                 OptionSpec spec = specs.get(i);
                 if (spec.mandatory() && !given[i]) {
-                    throw new PjException(Messages.get("option.missingMandatory", command, spec.longName()));
+                    throw new PjException(Messages.get(spec.isPositional() ? "option.missingMandatory.positional"
+                            : "option.missingMandatory", command, spec.longName()));
                 }
                 if (values[i] == null) {
                     values[i] = defaultValue(spec.component().getType());
@@ -256,7 +300,15 @@ public final class OptionBinder {
                 return i;
             }
         }
-        throw new PjException(Messages.get("option.unknown.short", command, letter));
+        // a hint: the long option that starts with the letter, if only one does, else the letters that exist
+        List<String> startingWith = specs.stream().map(OptionSpec::longName).filter(n -> n.charAt(0) == letter).toList();
+        if (startingWith.size() == 1) {
+            throw new PjException(Messages.get("option.unknown.short.suggestion", command, letter, startingWith.getFirst()));
+        }
+        String letters = specs.stream().filter(sp -> sp.shortName() != '\0')
+                .map(sp -> "-" + sp.shortName()).collect(java.util.stream.Collectors.joining(", "));
+        throw new PjException(letters.isEmpty() ? Messages.get("option.unknown.short", command, letter)
+                : Messages.get("option.unknown.short.letters", command, letter, letters));
     }
 
     private static boolean parseBoolean(String command, OptionSpec spec, String text) {
@@ -342,6 +394,21 @@ public final class OptionBinder {
             if (type == double.class || type == Double.class) {
                 return Double.valueOf(text);
             }
+            if (type == float.class || type == Float.class) {
+                return Float.valueOf(text);
+            }
+            if (type == short.class || type == Short.class) {
+                return Short.valueOf(text);
+            }
+            if (type == byte.class || type == Byte.class) {
+                return Byte.valueOf(text);
+            }
+            if (type == char.class || type == Character.class) {
+                if (text.length() != 1) {
+                    throw new NumberFormatException(text); // one character, not zero or two
+                }
+                return text.charAt(0);
+            }
             if (type == boolean.class || type == Boolean.class) {
                 return parseBoolean(command, spec, text);
             }
@@ -355,29 +422,19 @@ public final class OptionBinder {
                 throw new PjException(Messages.get("option.enumExpected", command, spec.longName(),
                         Arrays.toString(type.getEnumConstants()).toLowerCase(Locale.ROOT), text));
             }
-        } catch (NumberFormatException | InvalidPathException e) {
-            throw new PjException(Messages.get("option.invalidValue", command, spec.longName(), text));
+        } catch (NumberFormatException | ArithmeticException | InvalidPathException e) {
+            throw new PjException(Messages.get("option.invalidValue", command, spec.isPositional() ? "<" + spec.longName() + ">"
+                    : "--" + spec.longName(), text, spec.expected()));
         }
         throw new PjException(Messages.get("option.unsupportedType", command, type.getSimpleName()));
     }
 
+    /** What a component holds when its option is not given: {@code 0}, {@code false} or {@code '\0'} for every primitive. */
     private static Object defaultValue(Class<?> type) {
-        if (type == boolean.class) {
-            return false;
+        if (type.isPrimitive()) {
+            return Array.get(Array.newInstance(type, 1), 0);
         }
-        if (type == int.class) {
-            return 0;
-        }
-        if (type == long.class) {
-            return 0L;
-        }
-        if (type == double.class) {
-            return 0.0;
-        }
-        if (type == List.class) {
-            return List.of();
-        }
-        return null;
+        return type == List.class ? List.of() : null;
     }
 
     private static <P extends Record> P construct(String command, Class<P> type, List<OptionSpec> specs, Object[] values) {
@@ -394,8 +451,49 @@ public final class OptionBinder {
         } catch (InvocationTargetException e) {
             Throwable cause = e.getCause();
             throw new PjException(PjError.of(Messages.get("command.error", command, cause.getMessage()), cause));
-        } catch (ReflectiveOperationException e) {
+        } catch (ReflectiveOperationException | IllegalArgumentException e) {
             throw new PjException(PjError.of(Messages.get("option.unusableParameters", command, e), e));
+        }
+    }
+
+    /**
+     * Checks that a parameter record can be bound, the first time it is used or when its cmdlet is registered: a short
+     * or long name or a position given twice, a positional list that is not the last positional. Each is a mistake of the
+     * cmdlet's author, which would otherwise cost one failed call per user (audit v2, R-02). The type of an option is free:
+     * the types {@link #bind} converts from text (numbers, text, paths, durations, enums…) are converted, any other type
+     * receives a value that already is an instance of it ({@code --pattern ([java.util.regex.Pattern]::compile("a.*"))}),
+     * and is refused at the call otherwise ({@code option.unsupportedType}).
+     *
+     * @throws IllegalArgumentException with a message that names the component
+     */
+    public static void validate(Class<? extends Record> type) {
+        List<OptionSpec> specs = specs(type);
+        java.util.Map<String, String> seen = new java.util.HashMap<>();
+        for (OptionSpec spec : specs) {
+            String name = spec.component().getName();
+            claim(seen, "--" + spec.longName(), name, type);
+            if (spec.shortName() != '\0') {
+                claim(seen, "-" + spec.shortName(), name, type);
+            }
+            if (spec.isPositional()) {
+                claim(seen, "position " + spec.position(), name, type);
+            }
+        }
+        int[] positionals = DECLARED.get(type).positionals();
+        for (int i = 0; i < positionals.length - 1; i++) {
+            OptionSpec spec = specs.get(positionals[i]);
+            if (spec.isList()) {
+                throw new IllegalArgumentException(Messages.get("option.declaration.listNotLast", type.getSimpleName(),
+                        spec.component().getName()));
+            }
+        }
+    }
+
+    private static void claim(java.util.Map<String, String> seen, String key, String component, Class<?> type) {
+        String owner = seen.putIfAbsent(key, component);
+        if (owner != null) {
+            throw new IllegalArgumentException(Messages.get("option.declaration.duplicate", type.getSimpleName(),
+                    component, owner, key));
         }
     }
 
