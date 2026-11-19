@@ -1009,6 +1009,155 @@ this section only says where things stood when 0.2.0 was prepared. Phases 1 to 5
   and logs the failure at `WARNING`; an interruption (the runner interrupts an evaluation that a newer line overtook or
   that passed its deadline) is no failure: it gives the time-out result and logs nothing. Tests: `ShellHygieneTest`, `DiagnosticLogTest`, `ConfigFileTest`.
 
+### Fixed (`cp` and `mv` into a link to a folder, [#155](https://github.com/yp44/powerj/issues/155))
+- **A destination that is a symbolic link to a folder is a folder** (audit v2, R-08). `Transfer` asked `FileOps.isDirectory`,
+  which does not follow links, about the destination too: `cp a.txt alias/` failed with "destination is not a folder",
+  `cp a.txt alias` with "already exists", and `mv -f a.txt alias` **replaced the link** with the file. On macOS `/tmp`, `/var`
+  and `/etc` are links, so `cp x /tmp/` failed there. Links are now followed for the destination and its parent
+  (`FileOps.isFolderOrLinkToFolder`); a source is still never followed and `rm` still removes the link. Tests:
+  `FileOpsTest` (a link as destination for `cp` and `mv -f`, a link as a source still copied as a link).
+### Fixed (quotes stop wildcards for the file cmdlets, [#156](https://github.com/yp44/powerj/issues/156))
+- **`rm "report?.txt"` removes only the file named `report?.txt`** (audit v2, R-09). Since #73 the evaluator knew which
+  wildcards were quoted, but only native programs read it: the cmdlets received the text and expanded any `*` or `?` in
+  it, so `rm "report?.txt"` also removed `report1.txt`, and a file named with `*` or `?` (legal on Linux and macOS) could not
+  be targeted at all. The shell now hands a path option typed `Object` (or a `List` of `Object`) a `GlobArgument` (module
+  `powerj-fs`: the text and the glob pattern, quoted text escaped) when the quotes or a variable made a wildcard literal;
+  anywhere else, and for a third-party cmdlet whose option is typed `String`, the word is the text, as before. `rm`, `cp`,
+  `mv`, `touch`, `mkdir`, and now `ls`, `cat` and `grep` (their paths are typed `Object` and marked `path = true`) take
+  `"a?.txt"` as a name, a variable never expands, and in `"d?"/*.txt` only the `*` does. **Behaviour change**: `ls "*.txt"`
+  used to list the `.txt` files and now says `not found: *.txt`, as a Unix shell does. Tests: `QuotedWildcardsTest`
+  (the real cmdlets through the interpreter, on a file called `a?.txt` next to `ab.txt` and `a1.txt`), `OptionBinderTest`,
+  `WordForCmdletTest`.
+
+### Fixed (`cp -r` of a read-only folder, and the dates of the folders it copies, [#157](https://github.com/yp44/powerj/issues/157))
+- **`cp -r` copies a tree of read-only folders** (audit v2, R-10). `FileTrees` created a folder with its final permissions
+  before its children, so with `r-x` (a Go module cache, a Nix store, an archive after `chmod -R a-w`) every child failed
+  with `AccessDeniedException`; the children also rewrote the date of their folder, against "the attributes are kept". A
+  folder is now created writable and gets the owner (best effort), group, permissions and dates of its source when its last
+  child is done: after the content in the sequential walk, by the "last child done" counter the parallel removal already uses
+  in the parallel one. A folder that was merged (`-f`) is left as it was. Tests: `FileTreesTest` (a tree of two read-only
+  levels with two dates, at parallelism 1 and 8; a merged folder), `FileOpsTest`; they need a user other than root.
+- **A move across file systems that stops half way says so**: `mv` keeps the source, and now adds `the move is incomplete:
+  <source> is kept, and the copy in <destination> holds only part of it`. It does not remove the copy: with `-f` the
+  destination may be a folder that was there before. Test: `FileOpsTest` on a second file system (`/dev/shm`) when there is one.
+### Fixed (`cat` no longer ends the session on a device or a line without end, [#158](https://github.com/yp44/powerj/issues/158))
+- **`cat /dev/zero`, or a 2 GB minified file, no longer ends the session with an `OutOfMemoryError`** (audit v2, S-04).
+  `cat` refused a folder and nothing else, then `BufferedReader.readLine` grew one `StringBuilder` until the line ended.
+  Now `cat` reads regular files only (a link to one is followed): a device, a FIFO or a socket is refused at once with
+  `not a regular file: …` and is not opened (a FIFO blocked at `open`); `grep` gives the same answer for a file it is given by
+  name (inside a walk it still skips them silently). Lines come from `BoundedLines`: a line is read up to 64 Mi characters, a
+  longer one is reported, dropped without being kept and the next one is read (its number counts the skipped line), and the
+  interrupt flag is read at every refill of the buffer instead of every 4 096 lines, so Ctrl+C is seen inside a long line.
+  `BoundedLines` is the reader `grep` will use too (#160). Tests: `BoundedLinesTest` (terminators across buffers, the bound,
+  the flag, each seen failing when the code was broken on purpose), `CatTest`, `GrepTest`.
+
+### Fixed (Ctrl+C during a file read is a cancellation, not "cannot read x: null", [#159](https://github.com/yp44/powerj/issues/159))
+- **Ctrl+C inside a read stops `cat`, `grep` and the walk** (audit v2, R-11). `Files.newInputStream` is backed by an
+  interruptible channel: an interrupt that lands inside a read makes it throw `ClosedByInterruptException`, an
+  `IOException` with no message, which `cat`, `grep` (through the `WalkError` of `FileWalker`) reported as `cannot read
+  /x: null` before going on with the next file. `Interruption.rethrow` (module `powerj-fs`) turns it, and
+  `InterruptedIOException`, into a `CancellationException` with the flag of the thread set again; `Cat` and both modes of
+  `FileWalker` use it, so a `ClosedByInterruptException` is never a `WalkError`. In the parallel walk the worker only stops
+  (it must still signal its end, which a thread with its flag set cannot). An ordinary read failure is still reported.
+  Tests: `InterruptionTest`, `FileWalkerTest` (sequential and parallel, and an `IOException("disk on fire")` still an
+  error), `CatTest` (a stream that throws it, in lines and text modes; the test fails when the line of `Cat` is removed).
+
+### Fixed and changed (`grep` emits as it reads and keeps the matches before a decoding error, [#160](https://github.com/yp44/powerj/issues/160))
+- **`grep -v DEBUG app.log` on a multi-gigabyte log no longer holds the file in memory** (audit v2, S-05). `grep` gathered the
+  `GrepMatch` of a whole file before emitting any, so the memory grew with the file, nothing appeared before the end, and
+  `grep x big.log | first 1` read everything. With a heap of 128 MB, `grep -v zzz` on a 308 MB file used to end in an
+  `OutOfMemoryError` and now emits its 3.5 million lines in under a second
+  ([docs/quality/performance.md](docs/quality/performance.md)). `FileWalker.walkStreaming` (new, `powerj-fs`) takes a visitor
+  that gives its results one by one: a sequential walk calls the consumer before the visitor goes on, a parallel one hands
+  results over by the bounded queue. `grep` emits each match as the line is read (sequential) or by chunks of 1 000 (`-p`: the
+  lines of a file stay in order, and together up to a chunk), and a consumer that stops stops the reading.
+- **The matches before a decoding error are kept** (R-12). `InputStreamReader` throws at once and loses what it decoded in the
+  same call, so every match of the last buffer of text was lost with the bad bytes; and `grep` used to drop the whole list.
+  `DecodingReader` (new) returns what it decoded and throws on the next call; the error is now
+  `not readable as UTF-8 text from line <n>`, and `cat` uses the reader too. A line longer than 64 Mi characters ends the
+  search of its file (reported, with the matches before it) instead of filling the memory, as for `cat` (#158).
+  Tests: `GrepTest` (a counting stream, a consumer that stops, 5 000 matches before a bad byte at line 5001 in both walks,
+  2 500 matches in order across chunks), `DecodingReaderTest`, `FileWalkerTest`; each seen failing when the code was broken.
+
+### Added and fixed (`kill` has a safety net, [#161](https://github.com/yp44/powerj/issues/161))
+- **`ps | where … | kill` can no longer stop the terminal and the shell that typed it** (audit v2, U-07). `rm` has its
+  protected paths and `--allow-protected`; `kill` refused the current process only. It now refuses the **parents of PowerJ**
+  (the terminal, the IDE, the shell it was started from) and the **init process** (pid 1; the System and Idle processes on
+  Windows) with `refusing to stop <pid> (<name>): … (stop it anyway with --allow-protected)`, before `-n` too, so a dry run
+  shows what the real one would do. `--allow-protected` lifts it; stopping PowerJ itself is still the JDK's refusal.
+- **A stored `ProcessEntry` stops the process it described, or none** (R-18, kill part). `$p = ps java`, then `$p | kill`
+  used the pid alone, and a reused pid stopped another process; when the entry carries a start time that is not the one of the
+  process now at that pid, the error is `no process <pid>`.
+- **`kill -w` has an end** (S-09, kill part). It waited without limit for a process that ignores a normal stop. `--timeout
+  <duration>` (default 10 s) ends the wait: `process <pid> (<name>) is still running after 10s: use -f to force it`; the
+  process is not reported as stopped and the other targets go on. A timeout that is not above zero is a usage error.
+  Tests: `PsKillTest` (the parents and init with `-n`, so that a failing test stops nothing; a stale entry on a real child; a
+  child whose shutdown hook never returns), seen failing before the change.
+### Fixed and added (`ls` of a broken link, and `FileEntry.link` and `hidden`, [#162](https://github.com/yp44/powerj/issues/162))
+- **`ls broken` lists the broken link instead of printing nothing** (audit v2, U-06). `FileEntries.of` followed the link,
+  swallowed the failure (`vanished`) and returned nothing, while listing the parent showed the link. It now falls back to the
+  link's own attributes, as `FileWalker` does.
+- **`FileEntry` tells a link from a folder.** It gains `link` (a symbolic link: its other attributes are its target's, so a
+  link to a folder is still `dir`) and `hidden` (a leading dot, or the hidden attribute on Windows), outside the default
+  columns, so the table is unchanged and `(ls)*.link`, `ls | where { $_.link }`, `to-json` and `to-csv` have them. The
+  six-argument constructor stays. `FileWalker` hands the visitor the target's attributes through `FollowedLink`, which still
+  answers `isSymbolicLink()` with `true`: no system call is added per entry. Tests: `LsTest` (a broken link named and listed in
+  its parent, a link to a folder, a wildcard, hidden entries, the default columns).
+### Fixed (six gaps of the file operations, [#163](https://github.com/yp44/powerj/issues/163))
+- **`rm -f *.tmp` is quiet when nothing matches**, like POSIX `rm -f`: scripts and `--on-error stop` no longer break on it
+  (`FileOps.expand` takes `quiet`; `FileArguments.expand` says nothing for a `null` key). Without `-f` it still says
+  `no file matches`.
+- **`--dry-run` makes the checks of the real run** (U-09). `mkdir -n existing` said it would succeed and the real run failed;
+  now it gives the same `already exists` / `parent folder missing`. `touch -n` checks the parent and says `create` or `update`
+  (`FileOperation` action). The granularity of `-n` per command is written in the help and FR-72: `rm -r -n` lists every entry,
+  `cp -r -n` and `mv -n` each source once.
+- **`touch` and links** (R-18). It tested existence without following links, then `setLastModifiedTime` followed them, and a
+  broken link got "parent folder missing". It now follows a link as POSIX `touch` does (the target is updated, the link stays,
+  the entry emitted is the link's), reports a broken link as `broken link: …`, and says "parent folder missing" only when the
+  parent is missing.
+- **`cp -f` and `mv -f` do not replace a protected path.** Only the source was checked, and `cp` never loaded the list: replacing a
+  protected file the user had added (`~/.ssh/id_ed25519`) is removing it. The existing target is now checked for both; `cp` gets
+  `--allow-protected` (its source is not removed, so it is never checked).
+- **A relative line of `protected-paths` protects nothing and is reported once per session** (R-18): it was resolved against the
+  folder PowerJ was started in, so it protected a different folder each time, silently (`ProtectedPaths.ignoredLines`,
+  reported by `rm`, `cp` and `mv`).
+- **The removal of a folder that could not be listed to the end is reported once** (`FileTrees`, sequential and parallel): the
+  folder is kept, instead of being tried and reported a second time as `directory not empty`.
+  Tests: `FileOpsTest`, `ProtectedPathsTest`, `FileTreesListingFailureTest`, one or more for each point.
+### Fixed (four small defects of the data cmdlets, [#164](https://github.com/yp44/powerj/issues/164))
+- **`to-csv` says which columns it drops** (audit v2, U-09). The columns come from the first object, and those of a later
+  object that the header does not have were cut without a word (`from-csv` warns of the symmetric case). Each such column is now
+  named once, when it first appears, by a non-blocking error.
+- **`join` skips an object with an accessor that throws** (R-18) instead of ending the whole join with an `Unreadable`, as
+  `to-json` and `to-csv` do (left or right side, `--outer` included).
+- **`measure` and `sort` agree on numbers** (C-07). The two copies of the number helpers had parted: `BigInteger` was integral for
+  one and not the other, an adder holding 1.5 added up as 1 in `measure` and compared as 1.5 in `sort`, and a `NaN` adder was a
+  `NumberFormatException`. `io.powerj.text.Numbers` (`isIntegral`, `fitsLong`, `isFinite`, `decimal`, next to `SizeUnits`) is the
+  one helper; `sort` only takes the `long` shortcut for a number that fits one, so two big integers that differ beyond the
+  range of a long are no longer equal.
+- **`env --append` and `--prepend` do not create a variable from a path** (U-09). `env PATH --append /x` bound `/x` to the
+  option and set a variable called `/x` to `PATH`. An argument that cannot be a variable name (`/`, `\` or `=` in it), or two
+  values, is now a usage error, and an entry that is already in the list is not added again.
+  Tests: `NumbersTest`, `MeasureTest`, `SortTest`, `JoinTest`, `JsonCsvCmdletsTest`, `EnvTest`.
+
+### Fixed (review of the pull request of phase 2 of the audit v2, [#141](https://github.com/yp44/powerj/issues/141))
+- **A relative line of `protected-paths` no longer fails the command** (#163): it was reported with `context.error`, so `rm old.txt
+  && echo done` did not say done, and `--on-error stop` stopped before touching anything. It is logged at `WARNING`, once per
+  session (the API has no channel for a warning).
+- **`cat` and `grep` report a name the system cannot spell** (#156) (`invalid path …`) instead of ending in an internal error;
+  `FileArguments.expandOrReport` is shared.
+- **`env --prepend NAME dir` moves a `dir` that is already in the list to the head** instead of doing nothing (#164): that is how
+  a folder is given priority. `--append` still leaves an entry already there where it is.
+- **`grep` skips a line that is too long and goes on** (#160), as `cat` does, instead of giving up on the rest of the file; the
+  skipped lines are reported after its matches.
+- **`kill -w --timeout`** (#161) says `even after a forcible stop` when `-f` was given, and a timeout beyond a year is a year
+  instead of an `ArithmeticException`.
+- **The hidden attribute of a link followed on Windows** (#162): `FollowedLink` kept only the basic attributes, so a link to a
+  hidden file was listed as visible. `FollowedDosLink` keeps the DOS attributes of the target.
+- Examined, not changed: the notice of `to-csv` on dropped columns stays a non-blocking error, like `from-csv`'s `csv.extra.fields`
+  (the output is incomplete); the chunks of a parallel `grep` interleave between files above 1 000 matches, which FR-64 and the
+  help of `-p` now say.
+
 ## [0.1.0] — never released (baseline)
 
 The functional baseline that 0.2.0 starts from; it was only ever built as `0.1.0-SNAPSHOT`.

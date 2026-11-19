@@ -385,7 +385,7 @@ Sizes and durations in readable format (`14.2 KB`, `2 h 05 min`; the decimal sep
 - The argument is the **text** of its pieces one after the other. A word of **one** piece is as before: a lone variable keeps its value and its type (a cmdlet can receive a `FileEntry`), a lone text stays a `String`.
 - A variable is a piece at the start of the word, or right after a quoted text or another variable (`$a$b`, `"a"$b`). In the middle of plain text `$` is a plain character, as before (`grep foo$`, `echo a$b`). `$d.txt` and `"x".txt` are still the property `txt` of the value (FR-28): write `"$d.txt"`.
 - A blank, `;`, `|`, `>`, `&&`, `&` (background, FR-75), a group `( )`, a block `{ }` and a Java call end the word, as before. The name of a command is never glued, and a line that **starts** with a text is still an expression (`"hello" > file.txt`, `"a" + "b"`).
-- Only the characters of the **plain-text** pieces are wildcards (FR-40): what a quoted text or a variable holds is literal. `~` is the home folder (FR-62) at the start of the first piece if it is unquoted and followed by a slash (`~/"x"`).
+- Only the characters of the **plain-text** pieces are wildcards (FR-40): what a quoted text or a variable holds is literal. This holds for the file cmdlets as for the native programs: `rm "a?.txt"` removes the file of that name only (the shell hands a path option typed `Object` the word with its quoted wildcards marked, `GlobArgument`). `~` is the home folder (FR-62) at the start of the first piece if it is unquoted and followed by a slash (`~/"x"`).
 - The target of a redirection is such a word too: `"x" > "my docs"/out.txt`.
 - CA: in a folder `my docs` holding `a.txt` and `b.txt`: `^printf "[%s]" "my docs"/*` prints `[my docs/a.txt][my docs/b.txt]`; `^printf "[%s]" --message="a b"` prints `[--message=a b]`; `^echo x"y"z` prints `xyz`; `^echo "nowhere"/*` prints `nowhere/*` and never lists `/`.
 
@@ -477,10 +477,12 @@ public record FileEntry(
         Instant modified,  // last modification
         Path path,         // absolute path
         boolean dir,       // true if folder
-        String ext) { }    // extension without the dot, "" if none
+        String ext,        // extension without the dot, "" if none
+        boolean link,      // true for a symbolic link (not displayed)
+        boolean hidden) { } // true for a hidden entry (not displayed)
 ```
 
-Columns displayed by default: `name size modified dir`. The absolute path is the `path` property, not displayed but usable: `(ls)*.path`, `ls | map { f -> f.path }`. Folders are listed before files, in alphabetical order (except with `--parallel`). The walk is **lazy** (streaming): `ls -r C:\ | where …` displays the first results immediately and Ctrl+C interrupts it. An inaccessible folder produces a non-blocking error and the walk continues.
+Columns displayed by default: `name size modified dir`; `link` and `hidden` are properties like `path`: `(ls)*.link`, `ls | where { $_.link }`. A **symbolic link** is listed with the attributes of its target (a link to a folder has `dir` true, as before) and `link` true, so a link can be told from the folder before `rm -r`; a link that is **broken** is listed with its own attributes (and named by itself, `ls broken` lists it instead of saying nothing). A link is not followed by `-r`. The absolute path is the `path` property, not displayed but usable: `(ls)*.path`, `ls | map { f -> f.path }`. Folders are listed before files, in alphabetical order (except with `--parallel`). The walk is **lazy** (streaming): `ls -r C:\ | where …` displays the first results immediately and Ctrl+C interrupts it. An inaccessible folder produces a non-blocking error and the walk continues.
 
 CA:
 - `ls` displays the contents of the current directory as a table;
@@ -502,12 +504,12 @@ grep <pattern> [path...] [-r|--recurse] [-p|--parallel <n>] [--max-depth <n>] [-
 | `pattern` (positional, mandatory) | `String` | Regular expression, **`java.util.regex.Pattern`** syntax (`\w`, `(?<name>…)`, `(?i)`…). Unquoted, the argument is taken as is (`grep class\s+\w+`, FR-32b); in quotes, backslashes are doubled as in Java source (`grep "class (\\w+)"`). |
 | `path` (positional, multiple) | `String` | File(s) or folder(s) to search; wildcards on the last element (`*.log`, `src/*.java`). Default: the current directory, unless `grep` receives objects from the pipeline. A folder without `-r` is searched one level deep (its files). |
 | `-r`, `--recurse` | boolean | Walks subfolders. Symbolic links to folders are not followed. |
-| `-p`, `--parallel` | `int` ≥ 1 | Walks the tree and reads up to `n` files at the same time, in **virtual threads**. The order of the files is then free; the lines of a file stay grouped and in order. `1` (default): sequential, files in alphabetical order. |
+| `-p`, `--parallel` | `int` ≥ 1 | Walks the tree and reads up to `n` files at the same time, in **virtual threads**. The order of the files is then free; the lines of a file stay in order, and stay grouped up to 1 000 matches (a file with more is handed over in chunks of 1 000). `1` (default): sequential, files in alphabetical order. |
 | `--max-depth` | `int` ≥ 1 | Maximum depth (`1`: only the files of the folder); implies `-r`. |
 | `-i`, `--ignore-case` | boolean | Ignores case (Unicode). |
 | `-v`, `--invert` | boolean | Keeps the lines (or the objects) that do **not** match. |
 | `-a`, `--all` | boolean | Includes hidden files and folders. |
-| `--encoding` | charset | Charset of the files; default **UTF-8**, without fallback: a file that is not valid in this charset produces the non-blocking error `cannot read <file>: not readable as UTF-8 text (choose the charset with --encoding)`. |
+| `--encoding` | charset | Charset of the files; default **UTF-8**, without fallback: a file that is not valid in this charset produces the non-blocking error `cannot read <file>: not readable as UTF-8 text from line <n> (choose the charset with --encoding)`, after the matches of the lines before the bad bytes, which are kept. |
 | `--property` | name | Searches this property of the pipeline objects (`ls \| grep --property name ^a`). |
 | `--binary` | boolean | Also searches binary files: disables the NUL-byte check below. Combine with `--encoding ISO-8859-1` to read any bytes without a decoding error. |
 | `-s`, `--single-match` | boolean | Only the **first** matching line of each file searched (`GrepMatch`), and the file is not read further: finds quickly the files that match at least once (`grep TODO -r -s \| map { m -> m.path }`). With `-v`: the files that **never** match, one `GrepMatch` each with `line` 0, empty `text` and empty `matches` (reading stops at the first match, which excludes the file). No effect on the pipeline objects filtered like `where`. |
@@ -533,6 +535,8 @@ The table displays `path line text`; on a terminal that accepts colors, the matc
 - any other object is **filtered** like `where`: it is emitted unchanged if its text (`toString`, or the value of `--property`) matches (`git log --oneline | grep -i fix`).
 
 With objects in input and no `path`, the current directory is not searched. The `path` given are searched in any case. In non-interactive mode, a redirected standard input is such an input (FR-04d): `powerj -c "grep TODO . -r"` names the folder explicitly.
+
+**Emission.** A match is emitted **as the line is read** when the walk is sequential: nothing is kept, so `grep -v DEBUG app.log` on a multi-gigabyte log runs in constant memory, the first line appears at once, and `grep x big.log | first 1` stops reading the file at the first match (the consumer that has had enough stops the reading). A parallel walk (`-p`) hands over the matches of a file in chunks of 1 000. A line is read up to 64 Mi characters (`BoundedLines.MAX_LINE`); a longer one is skipped, as `cat` does (the lines after it are searched, its number is counted), and reported after the matches of the file: `cannot read <file>: 1 line(s) longer than … characters were not searched, the first is line <n>`.
 
 **Walk library.** The walk lives in the module **`powerj-fs`** (`io.powerj.fs.FileWalker`), reusable by any cmdlet (`ls -r` uses it; a third-party module can `requires io.powerj.fs`): depth, hidden files, order, parallelism in virtual threads with a bounded number of files open at once, cancellation by Ctrl+C, non-blocking errors. The visitor runs in the worker threads; results and errors are handed over to the cmdlet's thread, which alone calls `emit` / `error`.
 
@@ -584,6 +588,8 @@ public record CatContent(
         String content) // content of the files, end-of-line characters included
 { }
 ```
+
+**What is read.** Only regular files (a link to one is followed): a device (`/dev/zero`), a FIFO or a socket gives the non-blocking error `not a regular file: <path> (a device, a pipe or a socket is not read)` without being opened (`/dev/zero` has no end, and a FIFO blocks at open); `grep` gives the same answer for a file it is given by name. A **line** is read as a `String` up to 64 Mi characters (`BoundedLines.MAX_LINE`, as for a JSON value): a longer line is reported (`line <n> of <file> is longer than <max> characters: skipped`), dropped without being kept, and the reading goes on with the next one (its number counts the skipped line), so a file with no line break (minified JSON) cannot fill the memory. The interrupt flag is read at every refill of the read buffer, so Ctrl+C is seen inside a long line.
 
 **Several files.** They are read one after the other. The line numbers go on: if the first file has 3 lines, the first line of the second file is line 4. With `--text` and `--content`, a single object holds the content of all the files (`CatContent` has no `path`: it can mix several files).
 
@@ -667,6 +673,8 @@ env --prepend <NAME> <value>      # same, at the head of the list
 ```
 
 Output: stream of `record EnvVar(String name, String value)`, sorted by name (names case-insensitive on Windows).
+
+`--append` and `--prepend` take the name of the variable as their argument, then one value (`env --append PATH /tools`). An argument that cannot be a name (it holds `/`, `\`, `=`, as in `env PATH --append /x`, where `/x` would otherwise become a variable) or two values is a usage error; an entry that is **already in the list** is not added again by `--append`, and `--prepend` moves it to the head (it is how a folder is given priority). Entries are compared as written.
 
 Changes apply to **the PowerJ session environment**: they apply to all native commands launched afterwards, to the lookup of executables in the `PATH` (FR-13) and to the settings read by PowerJ (`POWERJ_NATIVE_ENCODING`…). They are not persisted: to make them permanent, put them in `profile.pj` (§8). Note: `System.getenv()` in a Java expression returns the **initial** environment of the process (a JVM cannot modify its own environment); use `env` for the session environment.
 
@@ -842,7 +850,7 @@ CA:
 ```text
 mkdir <path>... [-p|--parents] [-n|--dry-run]
 touch <path>... [-n|--dry-run]
-cp <source>... <destination> [-r|--recurse] [-f|--force] [-v|--verbose] [-n|--dry-run]
+cp <source>... <destination> [-r|--recurse] [-f|--force] [-v|--verbose] [-n|--dry-run] [--allow-protected]
 mv <source>... <destination> [-f|--force] [-v|--verbose] [-n|--dry-run] [--allow-protected]
 rm <path>... [-r|--recurse] [-f|--force] [-v|--verbose] [-n|--dry-run] [--allow-protected]
 ```
@@ -853,13 +861,17 @@ A **block** `{ … }` instead of a path is evaluated for each object: for `mkdir
 
 - `mkdir` creates folders (`-p`: with their missing parents, and an existing folder is not an error); `touch` creates an empty file or sets the modification time of an existing one. Both emit the `FileEntry` created or updated.
 - `cp` copies (`-r` for folders), `mv` moves or renames (atomically when possible; across file systems, a copy then a removal, the source being removed only once the copy has succeeded), `rm` removes (`-r` for a non-empty folder; `-f`: a missing path is not an error). They emit nothing, except with `-v`: the `FileEntry` of each destination, or of each removed entry.
+- `cp -r` copies a read-only folder (a module cache, an archive after `chmod -R a-w`): a folder is created writable, and gets the owner, permissions and dates of its source once its content is in, so a read-only tree is copied read-only and every folder keeps the date of its source. A move across file systems that fails half way keeps the source and says where the incomplete copy is (`the move is incomplete: …`); it does not remove what it copied, which may be a folder that was there before (`-f` merges).
 - `cp` and `mv` never overwrite an existing target without `-f` (not even one that appears between the check and the move: without `-f` `mv` uses no atomic move, which replaces on Unix); copying a folder into itself is refused, also through a link or an alias.
-- Symbolic links are never followed: `rm` removes the link, `cp` copies the link.
-- `-n`/`--dry-run` changes nothing and emits one `FileOperation(action, path, target)` per action that would be done.
+- Symbolic links are never followed: `rm` removes the link, `cp` copies the link. The one exception is the **destination** of `cp` and `mv`: a link to a folder is a folder (`cp a.txt alias/` copies into the target of `alias`, `mv -f a.txt alias` never replaces the link; on macOS `/tmp` is a link).
+- `-n`/`--dry-run` changes nothing and emits one `FileOperation(action, path, target)` per action that would be done, **after the checks of the real run**: `mkdir -n existing` gives the error `already exists` (and `parent folder missing` without `-p`) instead of listing what would fail, and `touch -n` says `create` or `update` for each file. The granularity is that of the command: `rm -r -n` lists **every entry** it would remove (content first), `cp -r -n` and `mv -n` list each **source once** (a folder is one operation).
+- `rm -f` is quiet about a **wildcard that matches nothing** (`rm -f *.tmp` in a folder without a `.tmp`), as POSIX `rm -f` is about a missing path.
+- `touch` follows a symbolic link, as POSIX `touch` does: its target is updated and the link stays; a **broken** link is `broken link: <path> (it points to nothing: …)`, not `parent folder missing`.
+- **Replacing a protected path.** `cp -f` and `mv -f` also check the path they would **replace** against the protected paths (replacing `~/.ssh/id_ed25519` is removing it): `protected path: … (remove it anyway with --allow-protected)`; `cp` has `--allow-protected` for it, and its source is never checked (it is not removed).
 - Each error (not found, exists, is a folder, parent missing, access denied, protected path) is non-blocking: the other paths are processed.
 - None of these cmdlets runs in preview mode (FR-66).
 
-**Protected paths.** `rm`, and `mv` for its sources, refuse a path that is protected or contains a protected path (removing `C:\Users` would remove the home folder), as well as the current folder and its parents: `rm: protected path: C:\Windows (remove it anyway with --allow-protected)`. The list is the file `protected-paths` of the configuration folder (§8): one path per line, `~` for the home folder, `#` for comments; it is read at each execution. The shell creates it at first launch with the defaults of the platform (file-system roots, `~`, the configuration folder, and the system folders: `C:\Windows`, `C:\Program Files`…, or `/etc`, `/usr`…); if it is missing, the same defaults apply. `--allow-protected` lifts the protection for one command. Paths are compared as the file system sees them: the links of the folders above a target are resolved (an alias of `C:\Users` or `/home` is refused as they are, and `alias/..` is the parent of what `alias` points to), a protected entry that is itself a link protects what it points to, and being in a link to a folder is being in it; the link itself may be removed, since removing it removes only the link. This guards against a mistake: the *content* of a protected folder is not protected (`rm /etc/hosts` is allowed), and a path can change between the check and the removal.
+**Protected paths.** `rm`, and `mv` for its sources, refuse a path that is protected or contains a protected path (removing `C:\Users` would remove the home folder), as well as the current folder and its parents: `rm: protected path: C:\Windows (remove it anyway with --allow-protected)`. The list is the file `protected-paths` of the configuration folder (§8): one path per line, `~` for the home folder, `#` for comments; it is read at each execution. The shell creates it at first launch with the defaults of the platform (file-system roots, `~`, the configuration folder, and the system folders: `C:\Windows`, `C:\Program Files`…, or `/etc`, `/usr`…); if it is missing, the same defaults apply. `--allow-protected` lifts the protection for one command. Paths are compared as the file system sees them: the links of the folders above a target are resolved (an alias of `C:\Users` or `/home` is refused as they are, and `alias/..` is the parent of what `alias` points to), a protected entry that is itself a link protects what it points to, and being in a link to a folder is being in it; the link itself may be removed, since removing it removes only the link. This guards against a mistake: the *content* of a protected folder is not protected (`rm /etc/hosts` is allowed), and a path can change between the check and the removal. A **relative line** of the file protects nothing: it would be resolved against the folder PowerJ was started in, a different folder in each session. It is ignored and logged once per session at `WARNING` (`protected-paths: ignored the relative line <line> (write an absolute path, or ~/…)`), not reported as an error of the command, so that the `rm` that follows still succeeds.
 
 The native programs of the same name remain available with `^` (FR-14).
 
@@ -934,7 +946,7 @@ No external library: the writers and parsers are part of PowerJ, and tested agai
 - Invalid JSON gives a non-blocking error with its position (`invalid JSON at line 3, column 7: expected ':' after a key`), and reading resumes at the next value.
 
 **`to-csv`** emits CSV (RFC 4180), one `String` per line, as the objects arrive: the header, then one line per object.
-- **Columns**: those of the first object (record components, `Row` or `Map` keys, or `value` for a scalar). A missing column gives an empty field.
+- **Columns**: those of the first object (record components, `Row` or `Map` keys, or `value` for a scalar). A missing column gives an empty field. A later object that has a column the header does not have loses it: each such column is named once, when it first appears, by a non-blocking error (`not in the header, so not written: other (the columns are those of the first object)`), as `from-csv` warns of the symmetric case.
 - **Fields**:
   - they are quoted when they contain the delimiter, a quote or a line break;
   - numbers use `.` and no exponent;
@@ -964,7 +976,7 @@ CA:
 
 ```text
 ps [name...] [-u|--user <user>]
-kill [pid...] [-f|--force] [-w|--wait] [-v|--verbose] [-n|--dry-run]
+kill [pid...] [-f|--force] [-w|--wait [--timeout <duration>]] [-v|--verbose] [-n|--dry-run] [--allow-protected]
 ```
 
 Both cmdlets use the JDK (`ProcessHandle`), without native calls, and behave the same on every platform. The native programs remain available with `^ps` and `^kill` (FR-14).
@@ -987,13 +999,15 @@ public record ProcessEntry(long pid, Long parent, String name, String command, S
 **`kill`** stops the processes given by pid, or received from the pipeline: `ProcessEntry`, `ProcessHandle`, `Process`, or an integer (`ps notepad | kill`).
 - **Stop mode**: without `-f`, a normal stop (`SIGTERM` on Unix); with `-f`, a forcible one (`SIGKILL`). On Windows, every stop is forcible. Other signals (`HUP`, `STOP`…) are not available: use the native program (`^kill -HUP 1234`).
 - **Output**:
-  - `kill` returns without waiting, and `-w` waits for each end;
+  - `kill` returns without waiting, and `-w` waits for each end, for `--timeout` at most (default 10 s, a duration above zero): a process still running then is reported (`process 1234 (java) is still running after 10s: use -f to force it`, or `… even after a forcible stop` with `-f`; a timeout beyond a year is a year), is not emitted with `-v`, and the other targets go on;
   - it emits nothing, except with `-v` (the processes stopped) or `-n` (the processes that would be stopped, without stopping them).
 - **Errors** (non-blocking, the other targets are processed):
   - a pid that does not exist;
   - a process that cannot be stopped;
+  - a process that is **protected**, like `rm` has its protected paths: a parent of PowerJ (the terminal, the IDE, the shell it was started from) or the init process (pid 1 on Unix, the System and Idle processes on Windows): `refusing to stop 4242 (terminal): PowerJ runs inside it (stop it anyway with --allow-protected)`. The check comes before `-n`, so a dry run does not list what the real run would refuse. A `where` that is too wide in `ps | where … | kill` no longer ends the session that typed it;
+  - a `ProcessEntry` whose process is not the one it described: when the entry carries a start time and the process now at that pid started at another time, the pid was reused and the error is `no process <pid>`;
   - PowerJ itself: the JDK forbids it, `cannot stop PowerJ itself (use exit)`.
-- The parents of PowerJ (the terminal) are stopped like any other process.
+- `--allow-protected` lifts the refusal of the parents and of init (never the one of PowerJ itself).
 - `kill` never runs in preview.
 
 CA:
@@ -1093,7 +1107,7 @@ Emits one **`Row`** per pair made of a left object and a right object with the s
 
 - **Algorithm:** hash join. The right side is read in `begin` and indexed by key; the left side is streamed, so `join` emits as soon as a left object arrives. Memory holds the right side only: put the smaller source on the right.
 - **Keys** are compared with `equals`; integral numbers are compared by value (`1` and `1L` match), as for `group` (FR-71). A `null` key matches nothing; with `-o` the left object is still emitted.
-- **Columns:** those of the left object, then those of the right object, as for `to-csv` (FR-73): the components of a record, the entries of a map or a `Row`, otherwise one column `value`. A right column whose name is already taken is renamed `right_<name>`. With `--key <property>`, the key column of the right side is left out (one column `code`). Size columns (a `@Bytes` component, a size column of a `Row`) stay displayed as sizes.
+- **Columns:** those of the left object, then those of the right object, as for `to-csv` (FR-73): the components of a record, the entries of a map or a `Row`, otherwise one column `value`. A right column whose name is already taken is renamed `right_<name>`. With `--key <property>`, the key column of the right side is left out (one column `code`). Size columns (a `@Bytes` component, a size column of a `Row`) stay displayed as sizes. An object with a property that cannot be read (an accessor that throws) is skipped with a non-blocking error, as `to-json` and `to-csv` do, and the join goes on.
 - **Order:** the left objects in their order; for each one, its matches in the order of the right side.
 - **Errors:** blocking without `--right`, without a key, with `--key` and `--left-key`/`--right-key` together, with `--left` after a `|`, without `--left` at the head of a pipeline, for an invalid property name, or if the block of a side fails. An error while evaluating a key is non-blocking: the object is skipped.
 

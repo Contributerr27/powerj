@@ -124,7 +124,7 @@ class JsonCsvCmdletsTest {
     void toJsonLinesEmitsOneObjectPerLine() {
         assertThat(run(new ToJson(), new ToJson.Params(false, true, null), entry("a.txt", 2048), "s"))
                 .containsExactly("{\"name\":\"a.txt\",\"size\":2048,\"modified\":\"2026-10-18T10:00:00Z\","
-                        + "\"path\":\"" + Path.of("/w/a.txt") .toString().replace("\\", "\\\\") + "\",\"dir\":false,\"ext\":\"txt\"}", "\"s\"");
+                        + "\"path\":\"" + Path.of("/w/a.txt") .toString().replace("\\", "\\\\") + "\",\"dir\":false,\"ext\":\"txt\",\"link\":false,\"hidden\":false}", "\"s\"");
     }
 
     @Test
@@ -207,8 +207,28 @@ class JsonCsvCmdletsTest {
                 row("size", 2L, "other", "x"), "scalar");
         assertThat(out).containsExactly("name,size", "\"a,b\",1", ",2", ",");
         assertThat(run(new ToCsv(), new ToCsv.Params(";", true), entry("a.txt", 10)))
-                .containsExactly("a.txt;10;2026-10-18T10:00:00Z;" + Path.of("/w/a.txt") + ";false;txt");
+                .containsExactly("a.txt;10;2026-10-18T10:00:00Z;" + Path.of("/w/a.txt") + ";false;txt;false;false");
         assertThat(run(new ToCsv(), new ToCsv.Params(null, false), "x", 1)).containsExactly("value", "x", "1");
+    }
+
+    @Test
+    void toCsvSaysOnceWhichColumnsAreNotInTheHeader() {
+        var context = new TestContext<String>(Path.of("."));
+        List<String> out = run(new ToCsv(), new ToCsv.Params(null, false), context, row("name", "a", "size", 1L),
+                row("size", 2L, "other", "x"), row("size", 3L, "other", "y"), row("name", "b", "extra", 1));
+
+        assertThat(out).containsExactly("name,size", "a,1", ",2", ",3", "b,");
+        assertThat(context.errors).hasSize(2); // `other` once, and then `extra`: each column is named when it first appears
+        assertThat(context.errors.get(0)).contains("other").doesNotContain("extra");
+        assertThat(context.errors.get(1)).contains("extra");
+    }
+
+    @Test
+    void toCsvSaysNothingWhenTheObjectsHaveTheColumnsOfTheHeader() {
+        var context = new TestContext<String>(Path.of("."));
+        run(new ToCsv(), new ToCsv.Params(null, false), context, row("a", 1, "b", 2), row("b", 3, "a", 4), row("a", 5));
+
+        assertThat(context.errors).isEmpty();
     }
 
     // --- from-csv ---

@@ -59,7 +59,7 @@ final class Transfer {
         this.destinationBlock = last instanceof ScriptBlock block ? block : null;
         this.destination = destinationBlock == null ? String.valueOf(last) : null;
         for (Object argument : paths.subList(0, paths.size() - 1)) {
-            for (Path path : FileOps.expand(String.valueOf(argument), context)) {
+            for (Path path : FileOps.expand(argument, context)) {
                 sources.add(new Source(path, path));
             }
         }
@@ -74,9 +74,13 @@ final class Transfer {
 
     /** Copies or moves each source into the destination folder, or to the destination name for a single source. */
     void run(CmdletContext<Object> context) {
-        ProtectedPaths protectedPaths = options.move() && !options.allowProtected()
+        // The list guards what is removed (the source of a move) and what is replaced (an existing target with -f).
+        ProtectedPaths protectedPaths = !options.allowProtected()
                 ? ProtectedPaths.load(context.configDirectory(), context.environment(), context.currentDirectory())
                 : null;
+        if (protectedPaths != null) {
+            protectedPaths.reportIgnored();
+        }
         if (destinationBlock != null) {
             runEach(protectedPaths, context);
             return;
@@ -86,8 +90,9 @@ final class Transfer {
             return;
         }
         boolean folder = destination.endsWith("/") || destination.endsWith("\\"); // cp a.txt backup/
-        boolean into = FileOps.isDirectory(target) || sources.size() > 1 || folder;
-        if (into && !FileOps.isDirectory(target)) {
+        // A destination that is a link to a folder is a folder: links are followed for the destination only.
+        boolean into = FileOps.isFolderOrLinkToFolder(target) || sources.size() > 1 || folder;
+        if (into && !FileOps.isFolderOrLinkToFolder(target)) {
             context.error(Messages.get("fileops.not.directory", target));
             return;
         }
@@ -130,8 +135,8 @@ final class Transfer {
             }
             target = target.toAbsolutePath().normalize();
             Path name = absolute.getFileName();
-            transfer(absolute, FileOps.isDirectory(target) && name != null ? target.resolve(name.toString()) : target,
-                    protectedPaths, context);
+            transfer(absolute, FileOps.isFolderOrLinkToFolder(target) && name != null
+                    ? target.resolve(name.toString()) : target, protectedPaths, context);
         }
     }
 
@@ -140,7 +145,7 @@ final class Transfer {
             context.error(Messages.get("fileops.not.found", source));
             return;
         }
-        if (protectedPaths != null) {
+        if (options.move() && protectedPaths != null) {
             var refusal = protectedPaths.refusal(source);
             if (refusal.isPresent()) {
                 context.error(refusal.get());
@@ -166,8 +171,16 @@ final class Transfer {
             context.error(Messages.get("fileops.exists", target));
             return;
         }
+        if (FileOps.exists(target) && protectedPaths != null) {
+            // -f replaces it: replacing ~/.ssh/id_ed25519 is removing it
+            var refusal = protectedPaths.refusal(target);
+            if (refusal.isPresent()) {
+                context.error(refusal.get());
+                return;
+            }
+        }
         Path parent = target.getParent();
-        if (parent != null && !FileOps.isDirectory(parent)) {
+        if (parent != null && !FileOps.isFolderOrLinkToFolder(parent)) {
             context.error(Messages.get("fileops.parent.missing", target));
             return;
         }
@@ -205,7 +218,10 @@ final class Transfer {
             return true;
         } catch (DirectoryNotEmptyException e) {
             if (!FileOps.copyTree(source, target, 1, options.force(), context)) {
-                return false; // the source is kept
+                // The source is kept. What was copied stays: the destination may have been there (a merge with -f), so
+                // it is not ours to remove; the user is told where it is.
+                context.error(Messages.get("fileops.move.incomplete", source, target));
+                return false;
             }
             return FileOps.deleteTree(source, 1, false, false, context, (path, entry) -> { });
         } catch (FileAlreadyExistsException e) {

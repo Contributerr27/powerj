@@ -215,6 +215,101 @@ class FileWalkerTest {
         }, results::add, errors::add)).isInstanceOf(StackOverflowError.class).hasMessage("deep");
     }
 
+    /** An interrupted read of an interruptible channel throws this, with no message (audit v2, R-11). */
+    @Test
+    void aReadInterruptedByCtrlCIsACancellationInTheSequentialWalk() {
+        var walker = FileWalker.builder().build();
+        try {
+            assertThatThrownBy(() -> walker.<String>walk(tmp, (path, attributes) -> {
+                if (attributes.isDirectory()) {
+                    return null;
+                }
+                throw new java.nio.channels.ClosedByInterruptException();
+            }, results::add, errors::add)).isInstanceOf(CancellationException.class);
+
+            assertThat(errors).isEmpty();
+            assertThat(Thread.currentThread().isInterrupted()).as("the flag is set again").isTrue();
+        } finally {
+            Thread.interrupted(); // leave the thread of the test as it was
+        }
+    }
+
+    @Test
+    void aReadInterruptedByCtrlCIsNotAnErrorOfTheFileInTheParallelWalk() {
+        var walker = FileWalker.builder().parallelism(4).build();
+
+        walker.<String>walk(tmp, (path, attributes) -> {
+            if (attributes.isDirectory()) {
+                return null;
+            }
+            throw new java.nio.channels.ClosedByInterruptException(); // the work was stopped under the visitor
+        }, results::add, errors::add);
+
+        assertThat(errors).isEmpty(); // it would read "cannot read x: null"
+    }
+
+    @Test
+    void anOrdinaryReadFailureIsStillAnError() {
+        FileWalker.builder().build().<String>walk(tmp, (path, attributes) -> {
+            if (attributes.isDirectory()) {
+                return null;
+            }
+            throw new IOException("disk on fire");
+        }, results::add, errors::add);
+
+        assertThat(errors).hasSize(4).allSatisfy(e -> assertThat(e.message()).isEqualTo("disk on fire"));
+    }
+
+    /** A streaming visitor hands over its results as it goes: before the visitor of the next entry runs (audit v2, S-05). */
+    @Test
+    void aStreamingVisitorSequentialResultsComeBeforeItGoesOn() {
+        List<String> events = new ArrayList<>();
+
+        FileWalker.builder().maxDepth(1).build().<String>walkStreaming(List.of(tmp), (path, attributes, sink) -> {
+            if (attributes.isDirectory()) {
+                return;
+            }
+            events.add("start " + path.getFileName());
+            sink.accept("first of " + path.getFileName());
+            events.add("middle " + path.getFileName());
+            sink.accept("second of " + path.getFileName());
+        }, result -> events.add("got " + result), errors::add);
+
+        assertThat(events).containsExactly("start root.txt", "got first of root.txt", "middle root.txt",
+                "got second of root.txt");
+    }
+
+    @Test
+    void aConsumerThatThrowsStopsTheSequentialStreamingVisitor() {
+        var after = new AtomicInteger();
+        var walker = FileWalker.builder().build();
+
+        assertThatThrownBy(() -> walker.<String>walkStreaming(List.of(tmp), (path, attributes, sink) -> {
+            if (!attributes.isDirectory()) {
+                sink.accept("one");
+                after.incrementAndGet(); // never reached: the consumer has had enough
+            }
+        }, result -> {
+            throw new IllegalStateException("enough");
+        }, errors::add)).isInstanceOf(IllegalStateException.class).hasMessage("enough");
+
+        assertThat(after.get()).isZero();
+    }
+
+    @Test
+    void aParallelStreamingVisitorGivesEveryResult() {
+        FileWalker.builder().parallelism(4).build().<String>walkStreaming(List.of(tmp), (path, attributes, sink) -> {
+            if (!attributes.isDirectory()) {
+                for (int i = 0; i < 1_000; i++) { // more than the queue holds: the worker waits for the consumer
+                    sink.accept(path.getFileName() + "#" + i);
+                }
+            }
+        }, results::add, errors::add);
+
+        assertThat(results).hasSize(4_000).contains("three.txt#999", "root.txt#0");
+        assertThat(errors).isEmpty();
+    }
+
     @Test
     void errorsAreClassified() {
         Path path = tmp.resolve("x");

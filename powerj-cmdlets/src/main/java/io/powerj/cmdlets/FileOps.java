@@ -17,7 +17,6 @@ import java.util.regex.PatternSyntaxException;
 import io.powerj.api.CmdletContext;
 import io.powerj.api.UsageException;
 import io.powerj.fs.FileTrees;
-import io.powerj.fs.Globs;
 import io.powerj.fs.WalkError;
 
 /** What the file operations share (specification FR-72): paths, error messages, copy and removal of trees. */
@@ -33,7 +32,7 @@ final class FileOps {
      * Path arguments of a file operation: the words, and at most one block that gives the path of each pipeline
      * object ({@code ls ../src --files | touch { $_.name }}).
      */
-    record Arguments(List<String> words, io.powerj.api.ScriptBlock block) {
+    record Arguments(List<Object> words, io.powerj.api.ScriptBlock block) {
     }
 
     /**
@@ -43,7 +42,7 @@ final class FileOps {
      *                                  input (it has no object to evaluate)
      */
     static Arguments arguments(List<Object> paths, String property, CmdletContext<?> context) {
-        List<String> words = new ArrayList<>();
+        List<Object> words = new ArrayList<>();
         io.powerj.api.ScriptBlock block = null;
         for (Object path : paths) {
             if (path instanceof io.powerj.api.ScriptBlock b) {
@@ -52,7 +51,7 @@ final class FileOps {
                 }
                 block = b;
             } else {
-                words.add(String.valueOf(path));
+                words.add(path);
             }
         }
         if (block != null && property != null) {
@@ -69,20 +68,32 @@ final class FileOps {
      * the session says otherwise ({@link FileArguments#ignoreCase}): {@code rm README*} does not remove {@code readme.md}
      * (review C-22) until the variable asks for it, and {@code rm -n} shows the list first.
      */
-    static List<Path> expand(String argument, CmdletContext<?> context) {
-        return expand(argument, Globs.isPattern(argument) && FileArguments.ignoreCase(context), context);
+    static List<Path> expand(Object argument, CmdletContext<?> context) {
+        return expand(argument, context, false);
+    }
+
+    /**
+     * Paths of an argument; with {@code quiet}, a wildcard that matches nothing is not an error ({@code rm -f *.tmp} in a
+     * folder without a {@code .tmp}, as for POSIX {@code rm -f}).
+     */
+    static List<Path> expand(Object argument, CmdletContext<?> context, boolean quiet) {
+        return expand(argument, FileArguments.isWildcard(argument) && FileArguments.ignoreCase(context), quiet, context);
     }
 
     /** Paths of an argument, with the given case rule for the wildcard. */
-    static List<Path> expand(String argument, boolean ignoreCase, CmdletContext<?> context) {
+    static List<Path> expand(Object argument, boolean ignoreCase, CmdletContext<?> context) {
+        return expand(argument, ignoreCase, false, context);
+    }
+
+    private static List<Path> expand(Object argument, boolean ignoreCase, boolean quiet, CmdletContext<?> context) {
         try {
             return FileArguments.expand(argument, false, ignoreCase, context, error -> report(error, context),
-                    "fileops.no.match");
+                    quiet ? null : "fileops.no.match");
         } catch (InvalidPathException e) {
-            context.error(Messages.get("fileops.invalid.path", argument, e.getMessage()));
+            context.error(Messages.get("fileops.invalid.path", FileArguments.text(argument), e.getMessage()));
             return List.of();
         } catch (PatternSyntaxException e) {
-            context.error(Messages.get("fileops.invalid.pattern", argument, e.getDescription()));
+            context.error(Messages.get("fileops.invalid.pattern", FileArguments.text(argument), e.getDescription()));
             return List.of();
         }
     }
@@ -101,9 +112,17 @@ final class FileOps {
         return Files.exists(path, LinkOption.NOFOLLOW_LINKS);
     }
 
-    /** A real folder: a link to a folder is not one (links are never followed). */
+    /** A real folder: a link to a folder is not one (a source and what {@code rm} removes are never followed). */
     static boolean isDirectory(Path path) {
         return Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS);
+    }
+
+    /**
+     * A folder, or a link to one: where a destination or its parent is concerned, a link to a folder is a folder
+     * ({@code cp a.txt alias/}, and on macOS {@code /tmp} is a link), audit v2 R-08.
+     */
+    static boolean isFolderOrLinkToFolder(Path path) {
+        return Files.isDirectory(path);
     }
 
     static boolean isEmptyDirectory(Path path) throws IOException {

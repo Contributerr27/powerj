@@ -43,7 +43,7 @@ class GrepTest {
     }
 
     private static Grep.Params params(String pattern, String... paths) {
-        return new Grep.Params(pattern, List.of(paths), false, null, null, false, false, false, null, null, false, false);
+        return new Grep.Params(pattern, List.<Object>of((Object[]) paths), false, null, null, false, false, false, null, null, false, false);
     }
 
     private static Grep.Params recursive(String pattern, Integer parallel) {
@@ -351,5 +351,136 @@ class GrepTest {
         var params = new Grep.Params("find", List.of("wide.txt"), false, null, null, false, false, false, "UTF-16LE",
                 null, false, false);
         assertThat(found(params)).containsExactly("wide.txt:1");
+    }
+
+    @Test
+    void aNamedDeviceIsRefusedLikeCatDoes() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(java.nio.file.Files.exists(Path.of("/dev/zero")), "no /dev/zero");
+
+        run(params(".", "/dev/zero"));
+
+        assertThat(context.errors).singleElement().asString().startsWith("not a regular file: ")
+                .contains("/dev/zero");
+    }
+
+    // --- Emission as the lines are read, and the matches before a decoding error (audit v2, S-05 and R-12) ---
+
+    /** Thrown by the context of a test when the consumer of {@code grep} has had enough ({@code | first 1}). */
+    private static final class Enough extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+    }
+
+    /** A context that stops the command at its first emission, as a downstream stage that is done would. */
+    @SuppressWarnings("unchecked")
+    private static io.powerj.api.CmdletContext<Object> stopsAtTheFirstEmit(TestContext<Object> real) {
+        return (io.powerj.api.CmdletContext<Object>) java.lang.reflect.Proxy.newProxyInstance(
+                Grep.class.getClassLoader(), new Class<?>[] {io.powerj.api.CmdletContext.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("emit")) {
+                        real.emit(args[0]);
+                        throw new Enough();
+                    }
+                    try {
+                        return method.invoke(real, args);
+                    } catch (java.lang.reflect.InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+    }
+
+    @Test
+    void aConsumerThatHasHadEnoughStopsTheReadingOfTheFile() throws Exception {
+        // a first match, then 40 MB of lines that match too: the file must not be read to the end for the first one
+        Path big = tmp.resolve("big.log");
+        try (var out = Files.newBufferedWriter(big)) {
+            out.write("hit first\n");
+            for (int i = 0; i < 400_000; i++) {
+                out.write("hit " + "x".repeat(90) + "\n");
+            }
+        }
+        var read = new java.util.concurrent.atomic.AtomicLong();
+        var grep = new Grep(path -> new java.io.FilterInputStream(Files.newInputStream(path)) {
+            @Override
+            public int read(byte[] b, int off, int len) throws java.io.IOException {
+                int count = super.read(b, off, len);
+                if (count > 0) {
+                    read.addAndGet(count);
+                }
+                return count;
+            }
+        });
+
+        assertThatThrownBy(() -> grep.begin(params("hit", "big.log"), stopsAtTheFirstEmit(context)))
+                .isInstanceOf(Enough.class);
+
+        assertThat(context.emitted).hasSize(1);
+        assertThat(read.get()).as("bytes read").isLessThan(1_000_000L); // the file is 40 MB
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 4})
+    void theMatchesBeforeADecodingErrorAreKeptAndTheErrorNamesTheLine(int parallelism) throws Exception {
+        var text = new StringBuilder();
+        for (int i = 1; i <= 5_000; i++) {
+            text.append("hit ").append(i).append('\n'); // far more than one buffer of text
+        }
+        byte[] head = text.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] content = java.util.Arrays.copyOf(head, head.length + 6);
+        content[head.length] = 'h';
+        content[head.length + 1] = (byte) 0xC3; // not valid UTF-8: line 5001
+        content[head.length + 2] = (byte) 0x28;
+        content[head.length + 3] = '\n';
+        content[head.length + 4] = 'h';
+        content[head.length + 5] = '\n';
+        Files.write(tmp.resolve("bad.log"), content);
+
+        List<GrepMatch> matches = run(new Grep.Params("hit", new java.util.ArrayList<Object>(List.of("bad.log")),
+                false, parallelism == 1 ? null : parallelism, null, false, false, false, null, null, false, false));
+
+        assertThat(matches).hasSize(5_000);
+        assertThat(matches.getLast().text()).isEqualTo("hit 5000");
+        assertThat(matches.getFirst().line()).isEqualTo(1);
+        assertThat(context.errors).singleElement().asString().contains("bad.log").contains("UTF-8")
+                .contains("line 5001");
+    }
+
+    @Test
+    void aParallelSearchKeepsTheLinesOfAFileInOrderAcrossChunks() throws Exception {
+        try (var out = Files.newBufferedWriter(tmp.resolve("many.log"))) {
+            for (int i = 1; i <= 2_500; i++) { // more than one chunk of a parallel walk
+                out.write("hit " + i + "\n");
+            }
+        }
+
+        List<GrepMatch> matches = run(new Grep.Params("hit", new java.util.ArrayList<Object>(List.of("many.log")),
+                false, 4, null, false, false, false, null, null, false, false));
+
+        assertThat(matches).extracting(GrepMatch::line).containsExactlyElementsOf(
+                java.util.stream.IntStream.rangeClosed(1, 2_500).boxed().toList());
+    }
+
+    @Test
+    void aQuotedNameThatTheSystemCannotSpellIsAnErrorNotAnInternalFailure() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(System.getProperty("os.name").startsWith("Windows"), "NUL is the invalid character of POSIX paths");
+
+        run(new Grep.Params("x", new java.util.ArrayList<Object>(List.of(new io.powerj.fs.GlobArgument("a\0b", "a\0b"))),
+                false, null, null, false, false, false, null, null, false, false));
+
+        assertThat(context.errors).singleElement().asString().startsWith("invalid path");
+    }
+
+    @Test
+    void aLineThatIsTooLongIsSkippedAndTheMatchesAfterItAreFound() throws Exception {
+        try (var out = Files.newBufferedWriter(tmp.resolve("minified.log"))) {
+            out.write("hit one\n");
+            out.write("x".repeat(BoundedLines.MAX_LINE + 1));
+            out.write("\nhit two\nhit three\n");
+        }
+
+        List<GrepMatch> matches = run(params("hit", "minified.log"));
+
+        assertThat(matches).extracting(GrepMatch::line).containsExactly(1, 3, 4); // the long line 2 is counted
+        assertThat(context.errors).singleElement().asString().contains("minified.log").contains("line 2")
+                .contains("1 line(s)");
     }
 }

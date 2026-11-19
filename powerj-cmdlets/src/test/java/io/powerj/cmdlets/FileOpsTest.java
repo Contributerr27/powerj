@@ -70,7 +70,7 @@ class FileOpsTest {
 
     private List<Object> cp(boolean recurse, boolean force, boolean verbose, boolean dryRun, List<Object> paths,
                             Object... inputs) throws Exception {
-        return run(new Copy(), new Copy.Params(paths, recurse, null, force, verbose, dryRun, null), inputs);
+        return run(new Copy(), new Copy.Params(paths, recurse, null, force, verbose, dryRun, null, false), inputs);
     }
 
     private List<Object> mv(boolean force, boolean allowProtected, String... paths) throws Exception {
@@ -204,6 +204,229 @@ class FileOpsTest {
 
         assertThat(context.errors).singleElement().asString().startsWith("source and destination are the same");
         assertThat(work.resolve("data/f.txt")).hasContent("x");
+    }
+
+    // --- Links: a destination that is a link to a folder is a folder (audit v2, R-08) ---
+
+    @Test
+    void cpIntoALinkToAFolderCopiesIntoTheTarget() throws Exception {
+        Path dir = Files.createDirectories(work.resolve("dir"));
+        file("a.txt", "a");
+        assumeTrue(symbolicLink(work.resolve("alias"), dir), "symbolic links not available");
+
+        cp(false, false, false, false, args("a.txt", "alias"));
+        cp(false, true, false, false, args("a.txt", "alias/"));
+        cp(false, false, false, false, args("a.txt", "alias/b.txt"));
+
+        assertThat(context.errors).isEmpty();
+        assertThat(dir.resolve("a.txt")).hasContent("a");
+        assertThat(dir.resolve("b.txt")).hasContent("a");
+        assertThat(work.resolve("alias")).isSymbolicLink();
+    }
+
+    @Test
+    void mvForceIntoALinkToAFolderKeepsTheLink() throws Exception {
+        Path dir = Files.createDirectories(work.resolve("dir"));
+        file("b.txt", "b");
+        assumeTrue(symbolicLink(work.resolve("alias"), dir), "symbolic links not available");
+
+        mv(true, false, "b.txt", "alias");
+
+        assertThat(context.errors).isEmpty();
+        assertThat(dir.resolve("b.txt")).hasContent("b");
+        assertThat(work.resolve("b.txt")).doesNotExist();
+        assertThat(work.resolve("alias")).isSymbolicLink();
+    }
+
+    @Test
+    void cpOfALinkSourceStillCopiesTheLinkItself() throws Exception {
+        Path dir = Files.createDirectories(work.resolve("dir"));
+        assumeTrue(symbolicLink(work.resolve("alias"), dir), "symbolic links not available");
+        Files.createDirectories(work.resolve("out"));
+
+        cp(false, false, false, false, args("alias", "out"));
+
+        assertThat(context.errors).isEmpty();
+        assertThat(work.resolve("out/alias")).isSymbolicLink();
+    }
+
+    // --- cp -r of a read-only folder, and a move that falls back to a copy (audit v2, R-10) ---
+
+    @Test
+    void cpOfAReadOnlyFolderCopiesItsContentAndKeepsItReadOnly() throws Exception {
+        assumeFalse(Host.windows() || "root".equals(System.getProperty("user.name")), "permissions are not enforced");
+        Path source = Files.createDirectories(work.resolve("ro"));
+        Files.writeString(source.resolve("f.txt"), "x");
+        Files.setPosixFilePermissions(source, java.nio.file.attribute.PosixFilePermissions.fromString("r-xr-xr-x"));
+        try {
+            cp(true, false, false, false, args("ro", "copy"));
+
+            assertThat(context.errors).isEmpty();
+            assertThat(work.resolve("copy/f.txt")).hasContent("x");
+            assertThat(Files.getPosixFilePermissions(work.resolve("copy"))).isEqualTo(
+                    java.nio.file.attribute.PosixFilePermissions.fromString("r-xr-xr-x"));
+        } finally {
+            Files.setPosixFilePermissions(source, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"));
+            if (Files.exists(work.resolve("copy"))) {
+                Files.setPosixFilePermissions(work.resolve("copy"),
+                        java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"));
+            }
+        }
+    }
+
+    @Test
+    void aMoveAcrossFileSystemsThatFailsHalfWayNamesTheIncompleteCopyAndKeepsTheSource() throws Exception {
+        assumeFalse(Host.windows() || "root".equals(System.getProperty("user.name")), "permissions are not enforced");
+        Path other = Path.of("/dev/shm");
+        assumeTrue(Files.isDirectory(other) && Files.isWritable(other)
+                && !Files.getFileStore(other).equals(Files.getFileStore(work)), "no second file system to move to");
+        file("src/ok.txt", "ok");
+        Path locked = file("src/locked.txt", "no");
+        Path destination = Files.createTempDirectory(other, "powerj-mv-");
+        Files.setPosixFilePermissions(locked, java.nio.file.attribute.PosixFilePermissions.fromString("---------"));
+        try {
+            mv(false, false, "src", destination.resolve("moved").toString());
+
+            assertThat(context.errors).anyMatch(e -> e.contains("incomplete") && e.contains("moved"));
+            assertThat(work.resolve("src/ok.txt")).exists(); // the source is kept
+            assertThat(destination.resolve("moved/ok.txt")).hasContent("ok");
+        } finally {
+            Files.setPosixFilePermissions(locked, java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"));
+            FileOps.deleteTree(destination, 1, false, false, context, (path, entry) -> { });
+        }
+    }
+
+    // --- Consistency of the file operations (audit v2, U-09 and R-18) ---
+
+    @Test
+    void rmForceIsSilentOnAWildcardWithoutMatchLikePosixRmF() throws Exception {
+        rm(false, true, false, false, false, args("*.tmp"));
+        assertThat(context.errors).isEmpty();
+
+        rm(false, false, false, false, false, args("*.tmp"));
+        assertThat(context.errors).singleElement().asString().startsWith("no file matches");
+    }
+
+    @Test
+    void rmForceStillRemovesWhatTheWildcardMatches() throws Exception {
+        file("a.tmp", "x");
+        file("keep.txt", "k");
+
+        rm(false, true, false, false, false, args("*.tmp"));
+
+        assertThat(context.errors).isEmpty();
+        assertThat(work.resolve("a.tmp")).doesNotExist();
+        assertThat(work.resolve("keep.txt")).exists();
+    }
+
+    @Test
+    void mkdirDryRunMakesTheChecksOfTheRealRun() throws Exception {
+        Files.createDirectories(work.resolve("existing"));
+        file("plain", "x");
+
+        assertThat(mkdir(false, true, "existing")).isEmpty();
+        assertThat(context.errors).singleElement().asString().startsWith("already exists");
+        context.errors.clear();
+        assertThat(mkdir(false, true, "plain")).isEmpty();
+        assertThat(context.errors).singleElement().asString().startsWith("a file already exists");
+        context.errors.clear();
+        assertThat(mkdir(false, true, "no/parent")).isEmpty();
+        assertThat(context.errors).singleElement().asString().startsWith("parent folder missing");
+        context.errors.clear();
+        // what the real run accepts, the dry run lists
+        assertThat(mkdir(true, true, "existing", "no/parent")).hasSize(2);
+        assertThat(mkdir(false, true, "fresh")).contains(new FileOperation("mkdir", work.resolve("fresh"), null));
+        assertThat(context.errors).isEmpty();
+    }
+
+    @Test
+    void touchDryRunSaysCreateOrUpdateAndChecksTheParent() throws Exception {
+        file("old.txt", "x");
+
+        List<Object> out = run(new Touch(), new Touch.Params(args("old.txt", "new.txt", "missing/z.txt"), true, null));
+
+        assertThat(out).containsExactly(new FileOperation("update", work.resolve("old.txt"), null),
+                new FileOperation("create", work.resolve("new.txt"), null));
+        assertThat(context.errors).singleElement().asString().startsWith("parent folder missing");
+        assertThat(work.resolve("new.txt")).doesNotExist();
+    }
+
+    @Test
+    void touchOfABrokenLinkSaysItIsBrokenNotThatTheParentIsMissing() throws Exception {
+        assumeTrue(symbolicLink(work.resolve("broken"), work.resolve("nowhere")), "symbolic links not available");
+
+        run(new Touch(), new Touch.Params(args("broken"), false, null));
+
+        assertThat(context.errors).singleElement().asString().startsWith("broken link").contains("broken");
+        assertThat(work.resolve("nowhere")).doesNotExist();
+    }
+
+    @Test
+    void touchOfALinkUpdatesItsTargetAndKeepsTheLink() throws Exception {
+        Path target = file("target.txt", "x");
+        Files.setLastModifiedTime(target, FileTime.from(Instant.parse("2020-01-01T00:00:00Z")));
+        assumeTrue(symbolicLink(work.resolve("alias.txt"), target), "symbolic links not available");
+
+        List<Object> out = run(new Touch(), new Touch.Params(args("alias.txt"), false, null));
+
+        assertThat(context.errors).isEmpty();
+        assertThat(Files.getLastModifiedTime(target).toInstant()).isAfter(Instant.parse("2025-01-01T00:00:00Z"));
+        assertThat(work.resolve("alias.txt")).isSymbolicLink();
+        assertThat(out).singleElement().isInstanceOf(FileEntry.class);
+    }
+
+    @Test
+    void mvForceDoesNotReplaceAProtectedTarget() throws Exception {
+        file("keep", "precious"); // the list of setUp protects work/keep
+        file("new.txt", "n");
+
+        mv(true, false, "new.txt", "keep");
+
+        assertThat(context.errors).singleElement().asString().contains("protected path");
+        assertThat(work.resolve("keep")).hasContent("precious");
+        assertThat(work.resolve("new.txt")).exists();
+        context.errors.clear();
+
+        mv(true, true, "new.txt", "keep"); // --allow-protected
+        assertThat(context.errors).isEmpty();
+        assertThat(work.resolve("keep")).hasContent("n");
+    }
+
+    @Test
+    void cpForceDoesNotReplaceAProtectedTargetEither() throws Exception {
+        file("keep", "precious");
+        file("new.txt", "n");
+
+        run(new Copy(), new Copy.Params(args("new.txt", "keep"), false, null, true, false, false, null, false));
+
+        assertThat(context.errors).singleElement().asString().contains("protected path");
+        assertThat(work.resolve("keep")).hasContent("precious");
+        context.errors.clear();
+
+        run(new Copy(), new Copy.Params(args("new.txt", "keep"), false, null, true, false, false, null, true));
+        assertThat(context.errors).isEmpty();
+        assertThat(work.resolve("keep")).hasContent("n");
+    }
+
+    @Test
+    void aRelativeLineOfTheListIsNotAnErrorOfTheCommand() throws Exception {
+        Files.write(config.resolve(ProtectedPaths.FILE_NAME), List.of("docs/private", tmp.resolve("work/keep").toString()));
+        file("old.txt", "x");
+
+        rm(false, false, false, false, false, args("old.txt"));
+
+        assertThat(context.errors).isEmpty(); // `rm old.txt && echo done` must still say done
+        assertThat(work.resolve("old.txt")).doesNotExist();
+    }
+
+    @Test
+    void cpOfAProtectedSourceIsStillAllowedItIsNotRemoved() throws Exception {
+        file("keep", "precious");
+
+        cp(false, false, false, false, args("keep", "copy"));
+
+        assertThat(context.errors).isEmpty();
+        assertThat(work.resolve("copy")).hasContent("precious");
     }
 
     // --- mkdir ---
@@ -509,7 +732,7 @@ class FileOpsTest {
     void cpParallelCopiesTheTree() throws Exception {
         Path root = wideTree("w");
 
-        List<Object> out = run(new Copy(), new Copy.Params(args("w", "copy"), true, 8, false, true, false, null));
+        List<Object> out = run(new Copy(), new Copy.Params(args("w", "copy"), true, 8, false, true, false, null, false));
 
         assertThat(context.errors).isEmpty();
         assertThat(tree(work.resolve("copy"))).hasSameSizeAs(tree(root));
@@ -521,7 +744,7 @@ class FileOpsTest {
     void parallelOnASingleFile() throws Exception {
         Path a = file("a.txt", "a");
 
-        run(new Copy(), new Copy.Params(args("a.txt", "b.txt"), false, 4, false, false, false, null));
+        run(new Copy(), new Copy.Params(args("a.txt", "b.txt"), false, 4, false, false, false, null, false));
         run(new Remove(), new Remove.Params(args("a.txt"), false, 4, false, false, false, false, null));
 
         assertThat(work.resolve("b.txt")).hasContent("a");
@@ -533,7 +756,7 @@ class FileOpsTest {
         assertThatThrownBy(() -> run(new Remove(), new Remove.Params(args("x"), true, 0, false, false, false, false, null)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("--parallel expects a number of threads of at least 1, got 0");
-        assertThatThrownBy(() -> run(new Copy(), new Copy.Params(args("x", "y"), true, -1, false, false, false, null)))
+        assertThatThrownBy(() -> run(new Copy(), new Copy.Params(args("x", "y"), true, -1, false, false, false, null, false)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("--parallel expects a number of threads of at least 1, got -1");
     }

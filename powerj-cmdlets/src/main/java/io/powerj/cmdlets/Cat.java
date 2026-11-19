@@ -2,7 +2,6 @@ package io.powerj.cmdlets;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.file.AccessDeniedException;
@@ -17,6 +16,7 @@ import io.powerj.api.CmdletContext;
 import io.powerj.api.CmdletInfo;
 import io.powerj.api.Option;
 import io.powerj.api.UsageException;
+import io.powerj.fs.Interruption;
 
 /**
  * {@code cat}: reads files, as lines or as a whole content (specification FR-65).
@@ -50,9 +50,9 @@ public final class Cat implements Cmdlet<Cat.Params, Object, Object> {
 
     /** Parameters of {@code cat}. */
     public record Params(
-            @Option(position = 0, description = "Files to read (wildcards * and ? accepted); "
+            @Option(position = 0, path = true, description = "Files to read (wildcards * and ? accepted); "
                     + "default: the pipeline objects")
-            List<String> paths,
+            List<Object> paths,
             @Option(shortName = 'l', description = "Output: a String per line (default)")
             boolean lines,
             @Option(shortName = 't', description = "Output: one String, the content of all the files")
@@ -67,17 +67,34 @@ public final class Cat implements Cmdlet<Cat.Params, Object, Object> {
             String property) {
     }
 
-    private static Reading reading(Params params, CmdletContext<Object> context) {
-        return context.state(Reading.class, () -> new Reading(params, context));
+    /** The longest line read as a String ({@link BoundedLines#MAX_LINE}); a longer one is reported and skipped. */
+    private final int maxLine;
+    private final Opener opener;
+
+    public Cat() {
+        this(BoundedLines.MAX_LINE, Files::newInputStream);
+    }
+
+    /** A {@code cat} with its own bound on the length of a line and its own way to open a file (the tests). */
+    Cat(int maxLine, Opener opener) {
+        this.maxLine = maxLine;
+        this.opener = opener;
+    }
+
+    Cat(int maxLine) {
+        this(maxLine, Files::newInputStream);
+    }
+
+    private Reading reading(Params params, CmdletContext<Object> context) {
+        return context.state(Reading.class, () -> new Reading(params, context, maxLine, opener));
     }
 
     @Override
     public void begin(Params params, CmdletContext<Object> context) {
         Reading reading = reading(params, context);
         if (!params.paths().isEmpty()) {
-            for (String argument : params.paths()) {
-                for (Path file : FileArguments.expand(argument, false, context, error -> FileArguments.report(error, context),
-                        "cat.no.match")) {
+            for (Object argument : params.paths()) {
+                for (Path file : FileArguments.expandOrReport(argument, false, context, "cat.no.match")) {
                     reading.read(file, context);
                 }
             }
@@ -109,12 +126,16 @@ public final class Cat implements Cmdlet<Cat.Params, Object, Object> {
         private final Mode mode;
         private final Charset charset;
         private final PipelineFiles files;
+        private final int maxLine;
+        private final Opener opener;
         /** Number of the last line read: goes on from one file to the next. */
         private int line;
         /** Whole content, with --text or --content; {@code null} while no file is read. */
         private StringBuilder content;
 
-        Reading(Params params, CmdletContext<?> context) {
+        Reading(Params params, CmdletContext<?> context, int maxLine, Opener opener) {
+            this.maxLine = maxLine;
+            this.opener = opener;
             mode = mode(params);
             charset = FileArguments.charset(params.encoding(), "cat.encoding.unknown");
             files = new PipelineFiles(params.property(), context,
@@ -144,8 +165,12 @@ public final class Cat implements Cmdlet<Cat.Params, Object, Object> {
                 context.error(Messages.get("cat.is.directory", absolute));
                 return;
             }
-            try (var reader = new BufferedReader(new InputStreamReader(Files.newInputStream(absolute),
-                    charset.newDecoder()))) {
+            if (Files.exists(absolute) && !Files.isRegularFile(absolute)) {
+                // a device, a FIFO, a socket: /dev/zero has no end, and a FIFO blocks at open (audit v2, S-04)
+                context.error(Messages.get("files.not.regular", absolute));
+                return;
+            }
+            try (var reader = new BufferedReader(new DecodingReader(opener.open(absolute), charset))) {
                 if (mode == Mode.TEXT || mode == Mode.CONTENT) {
                     // gathered aside: a file that cannot be decoded adds nothing
                     var text = new StringBuilder();
@@ -160,12 +185,20 @@ public final class Cat implements Cmdlet<Cat.Params, Object, Object> {
                     (content == null ? content = new StringBuilder() : content).append(text);
                     return;
                 }
-                String text;
-                while ((text = reader.readLine()) != null) {
-                    line++;
-                    if ((line & 0xFFF) == 0 && Thread.currentThread().isInterrupted()) {
-                        throw new CancellationException();
+                var lines = new BoundedLines(reader, maxLine);
+                while (true) {
+                    String text;
+                    try {
+                        text = lines.next();
+                    } catch (BoundedLines.TooLong e) {
+                        line++; // the line is skipped but counted: the numbers of the next ones are those of the file
+                        context.error(Messages.get("cat.line.too.long", absolute, line, maxLine));
+                        continue;
                     }
+                    if (text == null) {
+                        break;
+                    }
+                    line++;
                     context.emit(mode == Mode.LINES ? text : new CatLine(absolute, line, text.length(), text));
                 }
             } catch (CharacterCodingException _) {
@@ -177,6 +210,7 @@ public final class Cat implements Cmdlet<Cat.Params, Object, Object> {
             } catch (AccessDeniedException _) {
                 context.error(Messages.get("cat.access.denied", absolute));
             } catch (IOException e) {
+                Interruption.rethrow(e); // Ctrl+C inside a read: a cancellation, not "cannot read …: null" (R-11)
                 context.error(Messages.get("cat.read.failed", absolute, e.getMessage()));
             }
         }

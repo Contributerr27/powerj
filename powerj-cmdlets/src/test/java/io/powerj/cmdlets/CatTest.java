@@ -2,6 +2,7 @@ package io.powerj.cmdlets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -40,8 +41,8 @@ class CatTest {
     /** Output option given: none, --lines, --text, --numbered or --content. */
     private enum Out { NONE, LINES, TEXT, NUMBERED, CONTENT }
 
-    private static Cat.Params params(List<String> paths, Out out, String encoding, String property) {
-        return new Cat.Params(paths, out == Out.LINES, out == Out.TEXT, out == Out.NUMBERED, out == Out.CONTENT,
+    private static Cat.Params params(List<?> paths, Out out, String encoding, String property) {
+        return new Cat.Params(new java.util.ArrayList<Object>(paths), out == Out.LINES, out == Out.TEXT, out == Out.NUMBERED, out == Out.CONTENT,
                 encoding, property);
     }
 
@@ -244,5 +245,121 @@ class CatTest {
     void invalidPropertyNameIsBlocking() {
         assertThatThrownBy(() -> run(params(List.of(), Out.LINES, null, "a b"), "a.txt"))
                 .isInstanceOf(IllegalArgumentException.class).hasMessage("invalid property name: a b");
+    }
+
+    // --- Devices, pipes and a line without end (audit v2, S-04) ---
+
+    private static boolean posix() {
+        return !System.getProperty("os.name").startsWith("Windows");
+    }
+
+    @Test
+    void aDeviceIsRefusedAtOnce() throws Exception {
+        assumeTrue(posix() && Files.exists(Path.of("/dev/zero")), "no /dev/zero");
+
+        List<Object> out = run(params(Out.LINES, "/dev/zero"));
+
+        assertThat(out).isEmpty();
+        assertThat(context.errors).singleElement().asString().startsWith("not a regular file: ")
+                .contains("/dev/zero");
+    }
+
+    @Test
+    void aFifoIsRefusedWithoutBeingOpened() throws Exception {
+        assumeTrue(posix(), "no mkfifo");
+        Path fifo = tmp.resolve("pipe");
+        Process made = new ProcessBuilder("mkfifo", fifo.toString()).redirectErrorStream(true).start();
+        assumeTrue(made.waitFor() == 0, "mkfifo not available");
+
+        List<Object> out = run(params(Out.LINES, "pipe")); // opening it would block for ever
+
+        assertThat(out).isEmpty();
+        assertThat(context.errors).singleElement().asString().startsWith("not a regular file: ");
+    }
+
+    @Test
+    void aLinkToARegularFileIsStillRead() throws Exception {
+        Path link = tmp.resolve("alias.txt");
+        try {
+            Files.createSymbolicLink(link, tmp.resolve("a.txt"));
+        } catch (UnsupportedOperationException | java.io.IOException e) {
+            assumeTrue(false, "symbolic links not available");
+        }
+
+        assertThat(run(params(Out.LINES, "alias.txt"))).containsExactly("first", "second", "third");
+    }
+
+    @Test
+    void aLineLongerThanTheBoundIsReportedAndSkippedAndTheNextLinesAreRead() throws Exception {
+        Files.writeString(tmp.resolve("long.txt"), "short\n" + "x".repeat(10_000) + "\nafter\n");
+        var cat = new Cat(1_000);
+        context.hasInput = false;
+
+        List<Object> out = CmdletDriver.run(cat, params(Out.NUMBERED, "long.txt"), context);
+
+        assertThat(out).extracting(o -> ((CatLine) o).text()).containsExactly("short", "after");
+        assertThat(out).extracting(o -> ((CatLine) o).line()).containsExactly(1, 3); // line 2 was counted
+        assertThat(context.errors).singleElement().asString().contains("long.txt").contains("line 2")
+                .contains("1000");
+    }
+
+    @Test
+    void aFileWithoutAnyLineBreakDoesNotFillTheMemory() throws Exception {
+        // 5 million characters in one line, a bound of 100 thousand: the line is dropped, not kept
+        Path big = tmp.resolve("minified.json");
+        try (var out = Files.newBufferedWriter(big)) {
+            for (int i = 0; i < 500; i++) {
+                out.write("y".repeat(10_000));
+            }
+        }
+        var cat = new Cat(100_000);
+        context.hasInput = false;
+
+        List<Object> out = CmdletDriver.run(cat, params(Out.LINES, "minified.json"), context);
+
+        assertThat(out).isEmpty();
+        assertThat(context.errors).singleElement().asString().contains("minified.json");
+    }
+
+    // --- Ctrl+C during a read (audit v2, R-11) ---
+
+    /**
+     * A file is read through an interruptible channel: an interrupt that lands inside a read makes it throw
+     * {@code ClosedByInterruptException}, an {@code IOException} with no message. It is a cancellation, not
+     * "cannot read …: null" followed by the next file.
+     */
+    @Test
+    void ctrlCInsideAReadIsACancellationNotAReadError() throws Exception {
+        var cat = new Cat(BoundedLines.MAX_LINE, path -> new java.io.InputStream() {
+            @Override
+            public int read() throws java.io.IOException {
+                throw new java.nio.channels.ClosedByInterruptException();
+            }
+        });
+        for (Out out : List.of(Out.LINES, Out.TEXT)) {
+            context = new TestContext<>(tmp);
+            try {
+                assertThatThrownBy(() -> CmdletDriver.run(cat, params(List.of("a.txt", "b.txt"), out, null, null), context))
+                        .as(out.name()).isInstanceOf(java.util.concurrent.CancellationException.class);
+
+                assertThat(context.errors).as(out.name()).isEmpty();
+                assertThat(Thread.currentThread().isInterrupted()).as("the flag is set again").isTrue();
+            } finally {
+                Thread.interrupted();
+            }
+        }
+    }
+
+    @Test
+    void aQuotedNameThatTheSystemCannotSpellIsAnErrorNotAnInternalFailure() throws Exception {
+        assumeTrue(posix(), "NUL is the invalid character of POSIX paths");
+        var name = new io.powerj.fs.GlobArgument("a\0b", "a\0b");
+
+        var cat = new Cat();
+        context.hasInput = false;
+        CmdletDriver.run(cat, new Cat.Params(new java.util.ArrayList<Object>(List.of(name)), false, false, false, false,
+                null, null), context);
+
+        assertThat(context.errors).singleElement().asString().startsWith("invalid path");
     }
 }
