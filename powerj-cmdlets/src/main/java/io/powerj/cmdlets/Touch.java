@@ -28,7 +28,8 @@ public final class Touch implements Cmdlet<Touch.Params, Object, Object> {
             List<Object> paths,
             @Option(shortName = 'n', description = "Changes nothing: makes the checks of the real run and says for each file whether it would be created or updated")
             boolean dryRun,
-            @Option(description = "Property of the pipeline objects that gives the path (String, Path or File)")
+            @Option(description = "Property of the pipeline objects that gives the path (String, Path or File)"
+                    + "; without it, a String from the pipeline is a file name")
             String property) {
     }
 
@@ -89,7 +90,7 @@ public final class Touch implements Cmdlet<Touch.Params, Object, Object> {
             // the parent is missing; any other reason is the file's own
             Path parent = path.getParent();
             context.error(parent != null && !Files.exists(parent) ? Messages.get("fileops.parent.missing", path)
-                    : Messages.get("fileops.not.found", path));
+                    : Messages.get("files.not.found", path));
             return;
         } catch (IOException e) {
             FileOps.report(e, path, context);

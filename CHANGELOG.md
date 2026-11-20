@@ -1364,6 +1364,93 @@ this section only says where things stood when 0.2.0 was prepared. Phases 1 to 5
   not a wrapper (`Collections.unmodifiableList`) around a list that may be lazy; the lists the shell makes (captures, `[…]`,
   `*.`) have a type of their own, `ShellLists`, which it reads (#176).
 
+### Changed (one meaning per short option, [#177](https://github.com/yp44/powerj/issues/177))
+- **A reserved letter means the same option in every cmdlet** (audit v2, B-07; FR-18b): `-r` recurse, `-n` dry-run, `-f` force,
+  `-v` verbose, `-p` parallel, `-i` ignore case, `-a` all, `-l` lines. Four exceptions keep the habit of the GNU program of the
+  same name (`grep -v` invert, `cat -n` numbered, `mkdir -p` parents, `ls -f` filter). The table is in the specification and in
+  `CONTRIBUTING.md`; `CmdletOptionLettersTest` fails on a built-in cmdlet that gives a reserved letter another meaning.
+- **Visible change: `join` loses `-r` and `-l`, `group` loses `-n`.** `join --right { … }`, `join --left { … }` and
+  `group --no-items` are written in full: `join -r` read as `--recurse` to anyone who knows `ls -r`, and the three options take a
+  block or are rare. `join -r { … }` is now refused with `unknown option -r`.
+- **`ls --max-depth <n>`**, as `grep` has it: `1` lists the folder, `2` its subfolders too; it implies `--recurse`, and a
+  wildcard match counts as the first level. The error for a depth below 1 is one key for both (`files.maxDepth.invalid`).
+
+### Changed (help texts written once, one family of file messages, [#178](https://github.com/yp44/powerj/issues/178))
+- **The annotation and the bundle say the same thing** (audit v2, C-03): `help` shows `<name>.summary` and
+  `<name>.option.<long>` of the bundle, and the text of `@CmdletInfo`/`@Option`, which a reader of the class sees and which is
+  the fallback, had drifted in five places (`ps --names` said "case ignored" where the bundle and the code say "on Windows
+  only"; `perf`, `perf --save`, `grep --parallel`, `from-csv --no-header`). They are aligned, and `HelpTextsTest` fails when
+  an annotation of a built-in cmdlet differs from the English bundle or has no key. The annotation is kept rather than emptied:
+  `summary` is mandatory in the API, and the text stays readable next to the option.
+- **One family of keys for the failures about files** (C-04): `ls.not.found`, `cat.not.found`, `fileops.not.found` →
+  `files.not.found`; the four `*.no.match` → `files.no.match`; `cat|grep.encoding.unknown` → `files.encoding.unknown`;
+  `cat|fileops.access.denied`, `cat.read.failed`, `cat|fileops.property.not.a.file`, `cat|fileops.not.a.file`,
+  `fileops.invalid.path` → their `files.*` key (12 keys fewer in each bundle). `cat` now says "the property that gives the path", as the file
+  operations did. `range` has its own `range.pattern.invalid` instead of borrowing `grep`'s, and the property paths of every
+  cmdlet use `property.name.invalid` instead of `where.property.invalid`.
+- **One reporter of a walk error** (C-04): `FileOps.report(WalkError)` was a copy of `FileArguments.report` with other keys;
+  `cp`, `mv`, `rm` and `touch` now use the one of `ls`, `cat` and `grep`. **Visible change:** a folder that cannot be
+  read while a wildcard is expanded (`rm /mnt/flaky/*.tmp`) is reported as `cannot read /mnt/flaky: <reason>` instead of
+  `/mnt/flaky: <reason>`, as `ls` and `grep` already said. Step 1.8 of the architecture review had kept the shorter wording on
+  purpose, for a difference of wording that the two copies no longer had otherwise; the message says what failed (reading the
+  folder), so it now has one wording. The failures of the operation itself (a file that cannot be copied or removed) keep
+  `fileops.failed` (`<path>: <reason>`).
+
+### Changed (names that say what they are, and Javadoc that says what the code does, [#179](https://github.com/yp44/powerj/issues/179))
+- **Renamed in `powerj-cmdlets`** (audit v2, C-05): `Properties` → `ObjectProperties` (it hid `java.util.Properties`),
+  `Keys` → `KeyBlocks` and `PipelineFiles.Keys` → `PipelineFiles.MessageKeys` (two `Keys` in one package),
+  `FileOps.parallelism` → `Parallelism.of`, since `ls` and `grep`, which change nothing, called it; its message key is
+  `parallel.invalid` instead of `fileops.parallel.invalid`. The tests and the benchmark follow (`ObjectPropertiesTest`,
+  `ObjectPropertiesCostTest`, `KeyBlocksTest`, `ObjectPropertiesBenchmark`).
+- **Not renamed:** `GroupCmdlet` and `MapCmdlet` keep their suffix, now explained in their Javadoc: `Group` is the record that
+  `group` emits, whose name the user sees (`help group`, the banner of a preview, `help members`), and `Map` would hide
+  `java.util.Map`. Renaming the record (`GroupResult`, `Grouped`), as the ticket offered, would change what the user reads
+  for a gain inside the code only.
+- **Javadoc** (C-06): `FileWalker` no longer promises an entry "as soon as it is read": a sequential walk streams between
+  folders, but reads (and sorts) a whole folder before visiting its first entry. `core.i18n.Messages` and the header of its
+  bundles no longer name the package `io.powerj.core.exec`, which is gone. (The Javadoc of `ValueUnroller` was corrected with
+  #173.)
+
+### Fixed and documented (help examples that can be typed everywhere, the rule of a piped `String`, three text helpers, [#180](https://github.com/yp44/powerj/issues/180))
+- **Portable examples** (audit v2, B-10): `help ls` showed `ls -r -p 16 C:\dev` and `ls C:\Windows -d`, and `help env`
+  `env --append PATH C:\tools`, which name folders only Windows has; they are `ls -r -p 16 ~/dev`, `ls ~ -d` and
+  `env --append PATH ~/tools`. `CmdletExamplesTest` (in `powerj-shell`) parses every example of the 28 cmdlets and binds the
+  options of each stage that is a built-in cmdlet, groups `( … )` included, without running anything; it also refuses an
+  example that names a Windows drive.
+- **What a `String` from the pipeline is, written down** (U-10): a file name for `cat`, `cp`, `mv`, `rm`, `mkdir`, `touch`; the
+  text itself, never a file name, for `grep`, `from-json`, `from-csv`. The help of `--property` of each of them says which, and
+  the specification states the rule once (§3.9).
+- **Three text helpers** (B-10): `Texts.abbreviate` no longer cuts between the two halves of an emoji (half a character before
+  the ellipsis); an error of a block without a message is reported by its type (`java.lang.IllegalStateException (object
+  skipped: …)`) instead of `null (object skipped: …)`; `Formats.duration` writes the seconds of `1 min 05 s` with Latin digits
+  whatever the locale of the machine (under `fa` they were Persian digits). Tests: `TextsTest`, `FormatsTest`.
+
+### Changed (`ls` sorts without asking the disk again, `grep -p` searches piped files together, [#181](https://github.com/yp44/powerj/issues/181))
+- **`ls` sorts on the attributes it has already read** (audit v2, C-07): its comparator called `Files.isDirectory` at each
+  comparison, about 1.7 million system calls to sort a folder of 100 000 entries. `FileWalker.Builder.directoriesFirst(true)`
+  puts the folders first from the attributes read with the listing, and the order of paths only compares two folders or two
+  files (`FileWalkerTest.directoriesFirstSortsOnTheAttributesAlreadyRead`); the order is unchanged (folders first, then by
+  name, case ignored).
+- **`ls *.txt` expands its wildcard as every file cmdlet does**: `Ls.listWildcard` copied the split, the matcher and the
+  one-level walk of `FileArguments.expand`, and now calls `FileArguments.expandWildcard`, which builds each `FileEntry` from
+  the attributes read with the listing; the matches are sorted folders first, with no file read again.
+- **`grep -p n` with files from the pipeline reads them together** (S-09): each piped file started a walk and an executor of
+  its own, so `ls -r --filter *.java | grep -p 16 TODO` read the files one after the other. With `-p n` they are searched by
+  batches of `4n`, each batch by one parallel walk, and the last batch when the input ends
+  (`GrepTest.withParallelThePipedFilesAreSearchedTogether`, which waits for two files open at the same time); the first
+  matches come while the previous stage still runs, and memory does not grow with the input
+  (`…SearchedByBatchesBeforeTheInputEnds`). Without `-p`, each file is still searched when it arrives, so that `| first 1`
+  stops the reading.
+
+### Fixed (review of the pull request of phase 4 of the audit v2, [#225](https://github.com/yp44/powerj/pull/225))
+- **`grep -p` with files from the pipeline searches them by batches of `4n`** instead of keeping them all until the end of the
+  input: `ls -r / | grep -p 8 TODO | first 1` gave nothing before `ls` had walked the whole disk, and the list grew with the
+  input (#181).
+- **`ls *.txt` builds its entries from the attributes read with the listing** (`FileArguments.expandWildcard`): each match was
+  read a second time, and one that could not be read then vanished without an error (#181).
+- **The changed wording of a walk error of `cp`, `mv`, `rm`, `touch` is written down** (#178), and the examples of
+  `docs/acceptance/pipeline-v1.md`, `docs/plans/group.md` and `docs/plans/join.md` use `--no-items` and `--right` (#177).
+
 ## [0.1.0] — never released (baseline)
 
 The functional baseline that 0.2.0 starts from; it was only ever built as `0.1.0-SNAPSHOT`.

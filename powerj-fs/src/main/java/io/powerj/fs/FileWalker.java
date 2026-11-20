@@ -34,8 +34,10 @@ import java.util.function.Consumer;
  * walk goes on.
  * <ul>
  *   <li><b>Sequential</b> ({@code parallelism(1)}, the default): everything happens in the calling thread,
- *       depth first, children in the {@link Builder#order order} given; results arrive as the walk goes
- *       (streaming).</li>
+ *       depth first, children in the {@link Builder#order order} given. Results arrive as the walk goes, between
+ *       folders: the entries of one folder are read whole (and sorted, when an order is given) before the first of
+ *       them is visited, so a folder of a million entries is listed before anything of it comes out (audit v2,
+ *       C-06).</li>
  *   <li><b>Parallel</b> ({@code parallelism(n)}, {@code n > 1}): directories are listed and entries visited
  *       in virtual threads, at most {@code n} at the same time (open files). The visitor is then called
  *       concurrently, but the two consumers are still called <b>only in the calling thread</b>: a cmdlet
@@ -87,13 +89,27 @@ public final class FileWalker {
     private final int maxDepth;
     private final boolean includeHidden;
     private final int parallelism;
-    private final Comparator<Path> order;
+    /** Order of the children of a folder in a sequential walk, {@code null} for that of the system. */
+    private final Comparator<Entry> order;
 
     private FileWalker(Builder builder) {
         this.maxDepth = builder.maxDepth;
         this.includeHidden = builder.includeHidden;
         this.parallelism = builder.parallelism;
-        this.order = builder.order;
+        this.order = order(builder.directoriesFirst, builder.order);
+    }
+
+    /**
+     * The order of the children, on the attributes read when the folder was listed: sorting {@code n} entries reads
+     * nothing more from the disk (audit v2, C-07; {@code ls} once asked {@code Files.isDirectory} at each comparison).
+     */
+    private static Comparator<Entry> order(boolean directoriesFirst, Comparator<Path> byPath) {
+        Comparator<Entry> paths = byPath == null ? null : Comparator.comparing(Entry::path, byPath);
+        if (!directoriesFirst) {
+            return paths;
+        }
+        Comparator<Entry> folders = Comparator.comparing(entry -> !entry.attributes().isDirectory());
+        return paths == null ? folders : folders.thenComparing(paths);
     }
 
     public static Builder builder() {
@@ -173,7 +189,7 @@ public final class FileWalker {
             throw new CancellationException();
         }
         if (order != null) {
-            children.sort(Comparator.comparing(Entry::path, order));
+            children.sort(order);
         }
         for (Entry child : children) {
             checkCancelled();
@@ -443,6 +459,7 @@ public final class FileWalker {
         private boolean includeHidden;
         private int parallelism = 1;
         private Comparator<Path> order;
+        private boolean directoriesFirst;
 
         private Builder() {
         }
@@ -480,6 +497,16 @@ public final class FileWalker {
         /** Order of the children of a directory in a sequential walk (ignored in parallel); by default, that of the system. */
         public Builder order(Comparator<Path> order) {
             this.order = order;
+            return this;
+        }
+
+        /**
+         * In a sequential walk, the folders of a directory come before its files (then the {@link #order(Comparator)
+         * order} applies within each group). A link to a folder is a folder; a broken link is not. The attributes are
+         * those read when the directory was listed: no file is read again to sort.
+         */
+        public Builder directoriesFirst(boolean directoriesFirst) {
+            this.directoriesFirst = directoriesFirst;
             return this;
         }
 

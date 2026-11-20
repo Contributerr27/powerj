@@ -20,11 +20,13 @@ import io.powerj.api.ScriptBlock;
  * <pre>
  * ls -r | group ext | sort count -d | first 5
  * ls -r | group ext dir          # key = [ext, dir]
- * ls -r | group ext -n           # counts only
+ * ls -r | group ext --no-items  # counts only
  * </pre>
+ * The class is {@code GroupCmdlet} because {@code Group} is the record it emits, a name the user sees ({@code help group},
+ * the banner of a preview, {@code help members}): the type of the output keeps the short name (audit v2, C-05).
  */
 @CmdletInfo(name = "group", preview = true, category = "Filters", summary = "Groups the pipeline objects by key",
-        examples = {"ls -r | group ext | sort count -d | first 5", "ls -r | group ext dir", "ls -r | group ext -n",
+        examples = {"ls -r | group ext | sort count -d | first 5", "ls -r | group ext dir", "ls -r | group ext --no-items",
                 "(ls -r | group ext)[0].items", "cat app.log | group | where { $_.count > 1 }"})
 public final class GroupCmdlet implements Cmdlet<GroupCmdlet.Params, Object, Group> {
 
@@ -32,7 +34,7 @@ public final class GroupCmdlet implements Cmdlet<GroupCmdlet.Params, Object, Gro
     public record Params(
             @Option(position = 0, description = "Grouping keys: property, property path or block { … }; none: the objects themselves")
             List<Object> keys,
-            @Option(shortName = 'n', description = "Keeps only the count of each group, not its objects")
+            @Option(description = "Keeps only the count of each group, not its objects")
             boolean noItems) {
     }
 
@@ -52,7 +54,7 @@ public final class GroupCmdlet implements Cmdlet<GroupCmdlet.Params, Object, Gro
 
     private static State state(Params p, CmdletContext<Group> context) {
         return context.state(State.class,
-                () -> new State(Keys.blocks(p.keys(), context, "group.key.invalid"), new LinkedHashMap<>()));
+                () -> new State(KeyBlocks.blocks(p.keys(), context, "group.key.invalid"), new LinkedHashMap<>()));
     }
 
     @Override
@@ -69,7 +71,7 @@ public final class GroupCmdlet implements Cmdlet<GroupCmdlet.Params, Object, Gro
             return;
         }
         Object key = attempt.value();
-        Bucket bucket = state.buckets().computeIfAbsent(Keys.normalized(key), k -> new Bucket(key));
+        Bucket bucket = state.buckets().computeIfAbsent(KeyBlocks.normalized(key), k -> new Bucket(key));
         bucket.count++;
         if (!p.noItems()) {
             bucket.items.add(input);

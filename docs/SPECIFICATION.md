@@ -293,6 +293,28 @@ Option names are **case-sensitive** (`--recurse`; `--Recurse` is refused with `l
 
 **FR-20 — Conversion and validation.** Values are converted to the declared type of the parameter (`Path`, `int`, `long`, `Duration`, `Instant`, enum, `boolean`…). Missing mandatory option, unconvertible value or unknown option → explicit error before execution, with a suggestion (`ls: unknown option --recurce, did you mean --recurse?`). The case matters: a `boolean` is `true` or `false` and nothing else (`--recurse=yes`, `=1`, `=TRUE` are refused: `ls: --recurse expects true or false, not 'yes'`), and an enum is its **lower-case name** (`perf --view stages`), as the help, the completion (FR-23) and the error message show it.
 
+**FR-18b — One meaning per short option.** A letter that the user types in many commands means the same thing in all of them, so
+that the habit of one command is right in the next. The letters below are reserved: a built-in cmdlet that has the option uses this letter for it,
+and uses the letter for nothing else. `CmdletOptionLettersTest` holds the table and fails on a cmdlet that gives a reserved letter another meaning.
+
+| Letter | Long form | Meaning |
+|---|---|---|
+| `-r` | `--recurse` | Walks the subfolders. |
+| `-n` | `--dry-run` | Says what would be done, does nothing. |
+| `-f` | `--force` | Goes past a refusal (an existing target, a protected path). |
+| `-v` | `--verbose` | Reports each object acted on. |
+| `-p` | `--parallel` | Reads `n` files or folders at the same time. |
+| `-i` | `--ignore-case` | Compares ignoring case. |
+| `-a` | `--all` | Shows what is hidden by default: hidden files, or the lines `perf` drops. |
+| `-l` | `--lines` | One object per line. |
+
+Four exceptions follow the GNU program of the same name, whose habit is older than PowerJ's: `grep -v` is `--invert` (`grep` has no verbose
+mode), `cat -n` is `--numbered`, `mkdir -p` is `--parents` (neither has a dry run or a parallel walk), and `ls -f` is `--filter` (`ls` changes
+nothing, so there is nothing to force). Other letters (`-d`, `-c`, `-s`, `-k`, `-o`…) are chosen by each cmdlet, within a family of cmdlets
+(`-d` is `--delimiter` in `from-csv` and `to-csv`). An option that is rare or takes a block has no short form (`join --right`, `join --left`,
+`group --no-items`). A module's cmdlets are not checked, but are asked to follow the table.
+- CA: `help join` shows no `-r`; `join -r { … }` is refused with `unknown option -r`; `ls --max-depth 2` lists a folder and its subfolders, not deeper.
+
 ### 3.6 Completion (Tab)
 
 **FR-21 — Command completion.** In command position, Tab offers: built-in keywords, aliases, cmdlets, then executables from the `PATH` (cache refreshed in the background). The menu indicates the kind: `ls [pj]`, `cd [internal]`, `less [native]` (in French: `[interne]`, `[natif]`). After `^`, only native executables are offered.
@@ -452,10 +474,16 @@ Short rule: **`$_` for one-line filters typed at the keyboard, a named lambda as
 
 The first steps delivered **four cmdlets**: `ls`, `where`, `map` and `env`; the mini-iterations added `collect` (FR-36d), `grep` (FR-64), `cat` (FR-65), `sort` (FR-67), `first`, `last` and `range` (FR-68), `select` (FR-69), `count` and `measure` (FR-70), `group` (FR-71), `join` (FR-78), and the file operations `mkdir`, `touch`, `cp`, `mv`, `rm` (FR-72), the conversions `to-json`, `from-json`, `to-csv`, `from-csv` (FR-73), and the processes `ps`, `kill` (FR-74), `perf` (FR-76), and `grid` (FR-77) in the optional module `powerj-fx`. The first two alone cover the core mechanisms: producing record objects, attribute access, the pipeline, expressions, and mixing with native commands.
 
+**A `String` received from the pipeline** is read by what the cmdlet works on (audit v2, U-10). A cmdlet that works on files (`cat`, FR-65;
+`cp`, `mv`, `rm`, `mkdir`, `touch`, FR-72) takes it as a **file name**: `"a.txt" | cat` reads `a.txt`. A cmdlet that works on text (`grep`,
+FR-64; `from-json`, `from-csv`, FR-73) takes it as the **text itself**, never as a file name: `"a.txt" | grep txt` emits `a.txt`, and
+`cat a.json -t | from-json` is how a file is converted. A `Path`, a `File` or a `FileEntry` is a file for both. `--property` names the property
+that gives the file or the text; the help of `--property` of each of these cmdlets says which of the two rules it follows.
+
 #### FR-35 — `ls`: list files
 
 ```text
-ls [path...] [-a|--all] [-r|--recurse] [-f|--filter <pattern>] [-d|--dirs] [--files] [-p|--parallel <n>]
+ls [path...] [-a|--all] [-r|--recurse] [--max-depth <n>] [-f|--filter <pattern>] [-d|--dirs] [--files] [-p|--parallel <n>]
 ```
 
 | Option | Type | Description |
@@ -463,6 +491,7 @@ ls [path...] [-a|--all] [-r|--recurse] [-f|--filter <pattern>] [-d|--dirs] [--fi
 | `path` (positional, multiple) | `Path` | Folder(s) or file(s) to list; default: current directory. Wildcards accepted (`*.txt`). |
 | `-a`, `--all` | boolean | Includes hidden/system files. |
 | `-r`, `--recurse` | boolean | Walks subfolders. |
+| `--max-depth` | `int` ≥ 1 | Maximum depth of the walk (`1`: only the entries of the folder, `2`: those of its subfolders too); implies `--recurse`, as in `grep`. |
 | `-f`, `--filter` | pattern | Keeps only the names matching the pattern (`*.java`). |
 | `-d`, `--dirs` | boolean | Folders only. |
 | `--files` | boolean | Files only. |
@@ -504,7 +533,7 @@ grep <pattern> [path...] [-r|--recurse] [-p|--parallel <n>] [--max-depth <n>] [-
 | `pattern` (positional, mandatory) | `String` | Regular expression, **`java.util.regex.Pattern`** syntax (`\w`, `(?<name>…)`, `(?i)`…). Unquoted, the argument is taken as is (`grep class\s+\w+`, FR-32b); in quotes, backslashes are doubled as in Java source (`grep "class (\\w+)"`). |
 | `path` (positional, multiple) | `String` | File(s) or folder(s) to search; wildcards on the last element (`*.log`, `src/*.java`). Default: the current directory, unless `grep` receives objects from the pipeline. A folder without `-r` is searched one level deep (its files). |
 | `-r`, `--recurse` | boolean | Walks subfolders. Symbolic links to folders are not followed. |
-| `-p`, `--parallel` | `int` ≥ 1 | Walks the tree and reads up to `n` files at the same time, in **virtual threads**. The order of the files is then free; the lines of a file stay in order, and stay grouped up to 1 000 matches (a file with more is handed over in chunks of 1 000). `1` (default): sequential, files in alphabetical order. |
+| `-p`, `--parallel` | `int` ≥ 1 | Walks the tree and reads up to `n` files at the same time, in **virtual threads**. The order of the files is then free; the lines of a file stay in order, and stay grouped up to 1 000 matches (a file with more is handed over in chunks of 1 000). `1` (default): sequential, files in alphabetical order. Files received from the pipeline are searched together, by batches of `4n` (and the last one when the input ends): the first matches come while the previous stage still runs, and memory does not grow with the input; without `-p` each one is searched when it arrives. Text received from the pipeline is filtered when it arrives, so with `-p` it can come out before the matches of files received earlier. |
 | `--max-depth` | `int` ≥ 1 | Maximum depth (`1`: only the files of the folder); implies `-r`. |
 | `-i`, `--ignore-case` | boolean | Ignores case (Unicode). |
 | `-v`, `--invert` | boolean | Keeps the lines (or the objects) that do **not** match. |
@@ -820,7 +849,7 @@ CA:
 #### FR-71 — `group`: group objects by key
 
 ```text
-group [<key>...] [-n|--no-items]
+group [<key>...] [--no-items]
 ```
 
 Emits one **`Group`** record per distinct key, when the input ends, in the order the keys first appear:
@@ -832,7 +861,7 @@ record Group(Object key, long count, List<Object> items)
 
 - A key is a property, a property path or a block, as for `sort` (FR-67): `group ext`, `group path.parent`, `group { $_.size > 1mb }`. With no key, the objects themselves are grouped (`cat a.log | group`). With several keys (`group ext dir`), the key of a group is the list of the values (`[java, false]`).
 - Keys are compared with `equals`; integral numbers are compared by value (`1` and `1L` fall in the same group). A `null` key forms its own group.
-- `items` holds the objects of the group, in their input order. `-n`/`--no-items` keeps only the count (`items` is empty), so that very large inputs do not fill memory.
+- `items` holds the objects of the group, in their input order. `--no-items` keeps only the count (`items` is empty), so that very large inputs do not fill memory.
 - An error while evaluating a key is non-blocking: the object is in no group.
 
 The groups are displayed as a table `key count`. Their properties are completed by Tab and usable downstream: `ls -r | group ext | sort count -d | first 5`, `(ls -r | group ext)[0].items`. `group` is allowed in preview mode (FR-66).
@@ -840,7 +869,7 @@ The groups are displayed as a table `key count`. Their properties are completed 
 CA:
 - `ls -r | group ext | sort count -d | first 5` displays the five most frequent extensions;
 - `ls -r | group ext dir` groups by extension and kind;
-- `ls -r | group ext -n` displays the same counts, with empty `items`;
+- `ls -r | group ext --no-items` displays the same counts, with empty `items`;
 - `(ls | group dir)[0].items` gives the objects of the first group;
 - `cat app.log | group | where { $_.count > 1 }` displays the repeated lines;
 - `ls | group bad!` is a blocking error.
@@ -1099,8 +1128,8 @@ Emits one **`Row`** per pair made of a left object and a right object with the s
 
 | Option | Short | Description |
 |---|---|---|
-| `--right` (required) | `-r` | Right side: a block evaluated **once**, with no current object; its result is unrolled like a pipeline value (collection, array, stream). |
-| `--left` | `-l` | Left side when `join` starts a pipeline (block evaluated once). Otherwise the left side is the pipeline objects. |
+| `--right` (required) | — | Right side: a block evaluated **once**, with no current object; its result is unrolled like a pipeline value (collection, array, stream). |
+| `--left` | — | Left side when `join` starts a pipeline (block evaluated once). Otherwise the left side is the pipeline objects. |
 | `--key` | `-k` | Key of both sides: property, property path or block, as for `sort` (FR-67). |
 | `--left-key`, `--right-key` | — | Key of each side, when they differ (`--right-key { $_.zipcode.toUpperCase() }`). Without `--right-key`, the right key is the left one. |
 | `--outer` | `-o` | Left outer join: a left object without a match gives one row whose right columns are empty. |
@@ -1114,9 +1143,9 @@ Emits one **`Row`** per pair made of a left object and a right object with the s
 `join` is allowed in preview mode (FR-66).
 
 CA:
-- `cat countries.csv | from-csv | join -r { (cat zip.csv | from-csv) } --left-key statezip --right-key { $_.zipcode.toUpperCase() }` gives one row per zip code, with the columns of its country;
-- `join -l { (cat a.csv | from-csv) } -r { (cat b.csv | from-csv) } -k code` starts a pipeline, with a single column `code`;
-- `… | join -r { … } -k id -o` also keeps the left objects without a match, with empty right columns;
+- `cat countries.csv | from-csv | join --right { (cat zip.csv | from-csv) } --left-key statezip --right-key { $_.zipcode.toUpperCase() }` gives one row per zip code, with the columns of its country;
+- `join --left { (cat a.csv | from-csv) } --right { (cat b.csv | from-csv) } -k code` starts a pipeline, with a single column `code`;
+- `… | join --right { … } -k id -o` also keeps the left objects without a match, with empty right columns;
 - a right column with the name of a left column is called `right_<name>`;
 - `ls | join -k name` is a blocking error (`right side expected`).
 

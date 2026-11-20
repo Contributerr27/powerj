@@ -28,7 +28,8 @@ public final class Copy implements Cmdlet<Copy.Params, Object, Object> {
             boolean verbose,
             @Option(shortName = 'n', description = "Changes nothing: shows each source that would be copied (a folder once, not its content)")
             boolean dryRun,
-            @Option(description = "Property of the pipeline objects that gives the source (String, Path or File)")
+            @Option(description = "Property of the pipeline objects that gives the source (String, Path or File)"
+                    + "; without it, a String from the pipeline is a file name")
             String property,
             @Option(description = "Also overwrites protected paths with -f (list in the protected-paths file of the configuration folder)")
             boolean allowProtected) {
@@ -37,7 +38,7 @@ public final class Copy implements Cmdlet<Copy.Params, Object, Object> {
     @Override
     public void begin(Params p, CmdletContext<Object> context) {
         context.state(Transfer.class, () -> new Transfer(new Transfer.Options(false, p.recurse(),
-                FileOps.parallelism(p.parallel()), p.force(), p.verbose(), p.dryRun(), p.allowProtected()),
+                Parallelism.of(p.parallel()), p.force(), p.verbose(), p.dryRun(), p.allowProtected()),
                 p.paths(), p.property(), context));
     }
 

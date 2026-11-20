@@ -58,7 +58,7 @@ Then `cd C:\tmp\g`.
 | 21b | `(ls -r C:\Windows\System32 --on-error silent \| collect).size()` then the same with `-p 16` | Same number of entries; with `-p 16`, the order of the entries is free and the walk faster on a cold folder. `ls -p 0` gives `ls: --parallel expects a number of threads of at least 1, got 0`. |
 | 21c | `1..3000 \| map { "hit " + $_ } > many.txt`, then `^printf 'hit\n\xc3\x28\n' >> many.txt`, then `grep hit many.txt \| count` | Every line before the bad bytes is counted, then `grep: cannot read …many.txt: not readable as UTF-8 text from line 3001 (choose the charset with --encoding)`. |
 | 21d | (a large log) `grep -v zzz big.log \| first 1`, then `grep -v zzz big.log \| count` | The first answers at once and does not read the file to its end; the second runs with a flat memory use. |
-| 22 | `help grep` | Help with the options `-r`, `-p, --parallel`, `--max-depth`, `-i`, `-v`, `-a`, `--encoding`, `--property`, and the examples. |
+| 22 | `help grep` | Help with the options `-r`, `-p, --parallel`, `--max-depth`, `-i`, `-v`, `-a`, `--encoding`, `--property` (which says that without it a String from the pipeline is the text itself, never a file name), and the examples. |
 | 23 | `grep TODO a.txt > out.txt` then `type out.txt` | The table, **without** color codes. |
 
 ## Known limitations
@@ -66,5 +66,5 @@ Then `cd C:\tmp\g`.
 - The display of `GrepMatch` is the usual PowerJ table; long absolute paths take room (the `text` column is truncated to the terminal width). A grep-style display (`path:line:text`) may come later.
 - The highlighting applies to `GrepMatch` (files); filtered pipeline objects (`git log | grep fix`) are emitted unchanged, without color.
 - `grep` declares `Object` as output (it can emit `GrepMatch` or the filtered objects): Tab after `grep … | map { m -> m.` does not suggest the properties of `GrepMatch`.
-- With `-p`, the files received from the pipeline are searched one after the other (the parallelism applies to the walk of a folder).
+- With `-p n`, the files received from the pipeline are searched together by batches of `4n`, each batch by one parallel walk (`ls -r --filter *.java | grep -p 16 TODO`): the first matches come once 64 files are received, before `ls` ends. Without `-p`, each file is searched when it arrives.
 - In non-interactive mode (`powerj -c "grep …"`) with a redirected standard input, that input feeds `grep` like `where` (FR-04d): without a path, `grep` filters its lines and does not search the current folder (as GNU grep without a file). Give the folder explicitly: `powerj -c "grep TODO . -r"`.

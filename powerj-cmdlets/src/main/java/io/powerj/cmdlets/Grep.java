@@ -61,7 +61,8 @@ public final class Grep implements Cmdlet<Grep.Params, Object, Object> {
             @Option(shortName = 'r', description = "Walks subdirectories")
             boolean recurse,
             @Option(shortName = 'p', description = "Walks the tree with n files read at the same time, in virtual threads "
-                    + "(order of the files free)")
+                    + "(order of the files free; the matches of a file stay in order, and together up to 1000 of them; "
+                    + "files from the pipeline are searched by batches of 4n)")
             Integer parallel,
             @Option(description = "Maximum depth of the walk (1: only the files of the directory); implies --recurse")
             Integer maxDepth,
@@ -73,7 +74,8 @@ public final class Grep implements Cmdlet<Grep.Params, Object, Object> {
             boolean all,
             @Option(description = "Charset of the files (default: UTF-8)")
             String encoding,
-            @Option(description = "Property of the pipeline objects to search (e.g. name)")
+            @Option(description = "Property of the pipeline objects to search (e.g. name)"
+                    + "; without it, a String from the pipeline is the text itself, never a file name")
             String property,
             @Option(description = "Also searches binary files (no check of the NUL byte)")
             boolean binary,
@@ -86,6 +88,12 @@ public final class Grep implements Cmdlet<Grep.Params, Object, Object> {
     private static final int BINARY_PROBE = 8192;
     /** Matches of one file handed over together by a parallel walk: the lines of a file stay together up to this many. */
     private static final int PARALLEL_CHUNK = 1000;
+    /**
+     * With {@code -p n}, the files received from the pipeline are searched by batches of {@code n} times this many: enough
+     * for the walk to keep {@code n} files open, few enough that the first matches come while the previous stage is still
+     * running and that memory does not grow with the input.
+     */
+    static final int BATCH_PER_THREAD = 4;
 
     private final Opener opener;
 
@@ -108,7 +116,7 @@ public final class Grep implements Cmdlet<Grep.Params, Object, Object> {
         if (!params.paths().isEmpty()) {
             List<Path> roots = new ArrayList<>();
             for (Object argument : params.paths()) {
-                roots.addAll(FileArguments.expandOrReport(argument, params.all(), context, "grep.no.match"));
+                roots.addAll(FileArguments.expandOrReport(argument, params.all(), context, "files.no.match"));
             }
             search.files(roots, context);
         } else if (!context.hasInput()) {
@@ -124,8 +132,14 @@ public final class Grep implements Cmdlet<Grep.Params, Object, Object> {
             search.filter(input, context);
         } else if (params.recurse() || params.maxDepth() != null || !Files.isDirectory(file)) {
             // a directory received without -r is skipped: ls -r already emits its files
-            search.files(List.of(file), context);
+            search.received(file, context);
         }
+    }
+
+    /** With {@code -p}, the last batch of files received from the pipeline is searched now (audit v2, S-09). */
+    @Override
+    public void end(Params params, CmdletContext<Object> context) {
+        search(params, context).flush(context);
     }
 
     /** One execution of {@code grep}: compiled pattern and settings of the walk. */
@@ -143,12 +157,22 @@ public final class Grep implements Cmdlet<Grep.Params, Object, Object> {
         private final Opener opener;
         /** Matches handed over together: one by one when the walk is sequential, so nothing waits for the end of the file. */
         private final int chunk;
+        /**
+         * With {@code -p}, the files received from the pipeline and not searched yet: they are searched together, by one
+         * parallel walk, when there are {@link #batch} of them and when the input ends (one walk per file started an
+         * executor each and read the files one after the other). Without {@code -p}, each file is searched when it
+         * arrives, so that {@code | first 1} stops the reading.
+         */
+        private final List<Path> received = new ArrayList<>();
+        private final boolean parallel;
+        /** Files searched together with {@code -p}. */
+        private final int batch;
 
         Search(Params params, CmdletContext<?> context, Opener opener) {
             this.opener = opener;
-            int parallelism = FileOps.parallelism(params.parallel());
+            int parallelism = Parallelism.of(params.parallel());
             if (params.maxDepth() != null && params.maxDepth() < 1) {
-                throw new UsageException(Messages.get("grep.maxDepth.invalid", params.maxDepth()));
+                throw new UsageException(Messages.get("files.maxDepth.invalid", params.maxDepth()));
             }
             try {
                 pattern = Pattern.compile(params.pattern(),
@@ -158,7 +182,7 @@ public final class Grep implements Cmdlet<Grep.Params, Object, Object> {
                         e.getDescription(), e.getIndex()));
             }
             invert = params.invert();
-            charset = FileArguments.charset(params.encoding(), "grep.encoding.unknown");
+            charset = FileArguments.charset(params.encoding(), "files.encoding.unknown");
             detectBinary = !params.binary()
                     && !charset.name().startsWith("UTF-16") && !charset.name().startsWith("UTF-32");
             property = params.property() == null ? null : PropertyPath.of(params.property(), context);
@@ -166,6 +190,8 @@ public final class Grep implements Cmdlet<Grep.Params, Object, Object> {
             int maxDepth = params.maxDepth() != null ? params.maxDepth()
                     : params.recurse() ? Integer.MAX_VALUE : 1;
             chunk = parallelism == 1 ? 1 : PARALLEL_CHUNK;
+            parallel = parallelism > 1;
+            batch = parallelism * BATCH_PER_THREAD;
             walker = FileWalker.builder().maxDepth(maxDepth).includeHidden(params.all()).order(FileArguments.BY_NAME)
                     .parallelism(parallelism).build();
         }
@@ -187,6 +213,27 @@ public final class Grep implements Cmdlet<Grep.Params, Object, Object> {
             }
             walker.walkStreaming(readable, this::search, matches -> matches.forEach(context::emit),
                     error -> FileArguments.report(error, context));
+        }
+
+        /** A file received from the pipeline: searched now, or with the next batch with {@code -p}. */
+        void received(Path file, CmdletContext<Object> context) {
+            if (parallel) {
+                received.add(file);
+                if (received.size() >= batch) {
+                    flush(context);
+                }
+            } else {
+                files(List.of(file), context);
+            }
+        }
+
+        /** Searches the files kept by {@link #received}, in one parallel walk. */
+        void flush(CmdletContext<Object> context) {
+            if (!received.isEmpty()) {
+                List<Path> files = List.copyOf(received);
+                received.clear();
+                files(files, context);
+            }
         }
 
         /** Lets the object through if its text (or that of its property) matches. */

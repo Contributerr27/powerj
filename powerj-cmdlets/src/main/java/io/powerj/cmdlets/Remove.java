@@ -36,7 +36,8 @@ public final class Remove implements Cmdlet<Remove.Params, Object, Object> {
             boolean dryRun,
             @Option(description = "Also removes protected paths (list in the protected-paths file of the configuration folder)")
             boolean allowProtected,
-            @Option(description = "Property of the pipeline objects that gives the path (String, Path or File)")
+            @Option(description = "Property of the pipeline objects that gives the path (String, Path or File)"
+                    + "; without it, a String from the pipeline is a file name")
             String property) {
     }
 
@@ -46,7 +47,7 @@ public final class Remove implements Cmdlet<Remove.Params, Object, Object> {
     @Override
     public void begin(Params p, CmdletContext<Object> context) {
         FileOps.Arguments arguments = FileOps.arguments(p.paths(), p.property(), context);
-        int parallelism = FileOps.parallelism(p.parallel());
+        int parallelism = Parallelism.of(p.parallel());
         State state = context.state(State.class, () -> new State(
                 new PipelineFiles(p.property(), arguments.block(), context, FileOps.KEYS),
                 p.allowProtected() ? null : ProtectedPaths.load(context.configDirectory(), context.environment(),
@@ -76,7 +77,7 @@ public final class Remove implements Cmdlet<Remove.Params, Object, Object> {
     private static void remove(Params p, State state, Path path, CmdletContext<Object> context) {
         if (!FileOps.exists(path)) {
             if (!p.force()) {
-                context.error(Messages.get("fileops.not.found", path));
+                context.error(Messages.get("files.not.found", path));
             }
             return;
         }

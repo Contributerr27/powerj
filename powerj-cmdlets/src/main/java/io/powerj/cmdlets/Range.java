@@ -83,7 +83,7 @@ public final class Range implements Cmdlet<Range.Params, Object, Object> {
         if (p.include() && p.exclude()) {
             throw new UsageException(Messages.get("range.include.exclude"));
         }
-        ScriptBlock property = p.property() == null ? null : Keys.block(p.property(), context, "range.property.invalid");
+        ScriptBlock property = p.property() == null ? null : KeyBlocks.block(p.property(), context, "range.property.invalid");
         Bound from = bound("--from", p.from(), property, p.ignoreCase());
         Bound to = bound("--to", p.to(), property, p.ignoreCase());
         if (p.repeat() && !(from instanceof Match || from instanceof Condition)) {
@@ -176,7 +176,7 @@ public final class Range implements Cmdlet<Range.Params, Object, Object> {
                 return new Match(property, Pattern.compile(text,
                         ignoreCase ? Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE : 0));
             } catch (PatternSyntaxException e) {
-                throw new UsageException(Messages.get("grep.pattern.invalid", text, e.getDescription(),
+                throw new UsageException(Messages.get("range.pattern.invalid", text, e.getDescription(),
                         e.getIndex()));
             }
         }
