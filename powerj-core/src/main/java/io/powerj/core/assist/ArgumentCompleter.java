@@ -9,6 +9,7 @@ import java.util.Optional;
 import io.powerj.core.assist.Completions.Candidate;
 import io.powerj.core.assist.Completions.Result;
 import io.powerj.core.command.CmdletRegistry;
+import io.powerj.core.command.ModuleLoader;
 import io.powerj.core.command.OptionBinder;
 import io.powerj.core.i18n.Messages;
 import io.powerj.core.runtime.CommandCatalog;
@@ -41,6 +42,9 @@ final class ArgumentCompleter {
         if (name.equals("import")) {
             return packages.imports(wordStart, word);
         }
+        if (!forceNative && name.equals("mod-load")) {
+            return paths.paths(line, wordStart, cursor, ModuleLoader::isModuleFile); // a module: a folder or a jar
+        }
         if (cmdlet.isPresent()) {
             List<OptionBinder.OptionSpec> specs = OptionBinder.specs(cmdlet.get().parameters());
             if (word.startsWith("-")) {
@@ -58,7 +62,7 @@ final class ArgumentCompleter {
                         || s.isPath()));
             return pathPositional ? paths.paths(line, wordStart, cursor) : Result.none(cursor);
         }
-        if (catalog.builtinNames().contains(name) && !name.equals("cd")) {
+        if (!forceNative && catalog.builtinNames().contains(name) && !name.equals("cd")) {
             return Result.none(cursor);
         }
         return paths.paths(line, wordStart, cursor); // cd and native commands: paths (FR-25)
