@@ -1,4 +1,5 @@
-# greet.jar loaded from the modules folder of POWERJ_HOME, its messages in English and French (third-party-modules.sh).
+# greet.jar loaded from the modules folder of POWERJ_HOME, its messages in English and French; samples.jar loaded with
+# mod-load (third-party-modules.sh).
 . "$PSScriptRoot/common.ps1"
 
 smoke third-party-modules {
@@ -19,4 +20,8 @@ smoke third-party-modules {
     $modules = & $PJ -c 'mod-list'
     $modules
     if (-not ($modules -match 'com.example.greet')) { throw 'mod-list does not list com.example.greet' }
+    # The whole output, stderr included (2>&1): an option that did nothing, or an error, changes it.
+    $samples = & $PJ -c 'mod-load examples/samples/target/samples.jar; $l = java.util.Arrays.asList(1, null, 2); $l | passthrough | count; $l | passthrough -s | count; $l | passthrough -o; $l | passthrough -o | count; $l | passthrough -so' 2>&1
+    $samples
+    if (($samples -join ',') -ne 'passthrough,3,2,Optional[1],Optional.empty,Optional[2],2,Optional[1],Optional[2]') { throw "passthrough is wrong: $samples" }
 }
