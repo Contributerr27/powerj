@@ -1451,6 +1451,93 @@ this section only says where things stood when 0.2.0 was prepared. Phases 1 to 5
 - **The changed wording of a walk error of `cp`, `mv`, `rm`, `touch` is written down** (#178), and the examples of
   `docs/acceptance/pipeline-v1.md`, `docs/plans/group.md` and `docs/plans/join.md` use `--no-items` and `--right` (#177).
 
+### Fixed (`grid` without a toolkit is not a wrong command line, and a `java.sql.Date` cell, [#182](https://github.com/yp44/powerj/issues/182))
+- **A JavaFX toolkit that cannot start is an error of the command, not of its usage** (audit v2, R-21): `grid` wrapped the
+  failure (no display, GTK missing, a start that timed out) in an `IllegalArgumentException`, which the shell reads as "the
+  cmdlet was used incorrectly". It is now reported as an error of the command (`grid: the JavaFX toolkit cannot start (no
+  graphical display?): …`, `$?` false), which stops reading its input; `--wait` and `--pass-thru` do not wait for a window
+  that never opened, and nothing is passed on. The messages of the toolkit name it: "the JavaFX toolkit" instead of "the
+  graphical toolkit" (`GridCmdletTest.aToolkitThatCannotStartIsAnErrorOfTheEnvironmentNotOfUsage`).
+- **A `java.sql.Date` or `java.sql.Time` cell no longer breaks the filter, the sort or the copy of its column**: both extend
+  `java.util.Date` and throw `UnsupportedOperationException` from `toInstant()`, which `FilterParser`, `ValueOrder` and
+  `RowExporter` called. One helper, `Dates.instant`, falls back to the milliseconds since the epoch (tests in
+  `FilterParserTest`, `RowExporterTest` and the new `ValueOrderTest`, with a test double of `java.sql.Date`: the module does
+  not read `java.sql`).
+
+### Changed (the types of a commit are written down, and the CI checks the subjects, [#184](https://github.com/yp44/powerj/issues/184))
+- **Ten types, and the scope in parentheses** (audit v2, C-09): `CONTRIBUTING.md` listed seven types while `perf`, `chore` and
+  `style` were in use, and seven subjects of `main` had a scope in place of the type (`select:` ×2, `fx:` ×2, `shell:`,
+  `join:`, `group:`). The list now has the ten types, `!` for a breaking change, and the rule that a scope goes in parentheses
+  (`feat(select): …`). History is not rewritten.
+- **`ci/check-commit-subjects.sh`** checks the subject of each commit of a pull request (job "Commit subjects" of `ci.yml`): a
+  pull request with a commit `shell: x` is red. A merge or a revert written by git passes. No dependency: git and bash;
+  `ci/check-commit-subjects-test.sh` runs its cases (`shell: x`, `fix (core): x`, `fixup! …` fail; `refactor(api,cmdlets): …`,
+  `feat(api)!: …` pass), seen failing with the types loosened on purpose.
+- **Dependabot writes `build(deps): bump …` and `ci(deps): bump …`** (`commit-message` in `.github/dependabot.yml`), so that its
+  pull requests pass the check.
+
+### Changed (the extension API before its first release: `perf` is not API, `Row` refuses a nameless column, [#185](https://github.com/yp44/powerj/issues/185))
+- **Breaking change of the API** (before the first release): `io.powerj.api.perf` is exported to `io.powerj.core` and
+  `io.powerj.cmdlets` only (audit v2, B-04). Its eleven records (`PerfReport`, `StageStat`…) were 190 of the 302 lines of the
+  snapshot of the API, with public constructors: once japicmp compares versions (#57), a field added to a measure would have
+  been a break. They are the data of the built-in `perf` cmdlet, which the core produces; the user still reads them through
+  `$perf`. The snapshot loses them (one regeneration), and `ApiSurfaceTest` now reads the exports of `module-info.class`: a
+  package exported to the built-in modules only is not API, whatever its name.
+- **Breaking change of the API**: `Row.of` throws `NullPointerException` for a `null` column name (R-17). It was accepted, and
+  the table display failed later (`List.copyOf` of the keys), far from the cmdlet that built the row. Tested in `RowTest`.
+- **Javadoc**: `CmdletProvider.cmdlets()` says when it is called (once per load, on the loading thread), that the list is not
+  kept, that an invalid cmdlet is left out with a warning, and that an exception fails the load of the module;
+  `CmdletContext.variable()` says that the automatic variables are included and that an unset variable and one that holds
+  `null` both give an empty `Optional`. No `hasVariable` is added: no cmdlet needs it, and a `default` method can be added
+  later without a break.
+- **`TestContext.perfReports` is replaced by `TestContext.services`** (module `powerj-testing`, test scope only): a test puts the
+  services the shell offers by type. The kit of tests no longer names the `perf` package, which its users may not read.
+
+### Fixed (no English left in a French perf footer, and the keys the code builds are checked, [#186](https://github.com/yp44/powerj/issues/186))
+- **The perf footer is in the language of the session** (audit v2, B-09; FR-61, FR-76): its first column header came from the
+  bundle, the next five (`in`, `out`, `active`, `starved`, `blocked`) and the `display` row were literals, so a French summary
+  was half English. They are `perf.footer.*` keys: `entrée`, `sortie`, `actif`, `à vide`, `bloqué`, `affichage`
+  (`PerfFooterTest`, seen red first). `── perf ·` keeps the name of the mode.
+- **`help <class>` writes its first line as Java does, in every language**: `class` went through the bundle (`classe` in French)
+  while `interface`, `enum`, `record`, `annotation` and `extends` did not, which gave `classe java.util.ArrayList extends
+  AbstractList`. The ticket offered to translate them all or none; they are Java keywords, like the signatures below them, so
+  none is (`help.kind.class` is removed; `HelpJavaClassTest`, seen red first).
+- **The keys built by the code exist in both languages**: `DynamicMessageKeysTest` lists the families that
+  `MessageBundlesTest` cannot see because they are not written whole (`located(…)` → `.end`/`.at` and `inContext(…)` →
+  `.block` of the parser, `block.arity.<one|other>.<one|other>`), and `CommandResolutionTest` checks
+  `help.builtin.<name>.usage` as well as `.description` for each built-in command. It was seen failing with
+  `syntax.missing.block` removed from the French bundle.
+- Already done before this ticket: `MessageBundlesTest` compares the `{n}` of each key in `en` and `fr`, and the `/ by zero` of
+  the JDK is `operator.divisionByZero` (#175).
+
+### Changed (the Windows smoke tests are scripts, shared by the CI and the release, [#183](https://github.com/yp44/powerj/issues/183))
+- **`ci/smoke/*.ps1`** (audit v2, B-06): the Windows job of `ci.yml` carried its smoke tests inline, 65 lines of PowerShell
+  that copied the session of `ci/smoke/launcher.sh`, and `release.yml` ran none of them on the files it uploads. They are now
+  `common.ps1` (the launcher, a work folder removed however the script ends, `expect` as in `common.sh`), `launcher.ps1`,
+  `profiler.ps1`, `modules.ps1`, `non-interactive.ps1`, `third-party-modules.ps1` and `fx.ps1`; `ci.yml` calls them, and the
+  Windows job of `release.yml` runs them before it adds the files to the draft. `ci.yml` holds no inline session script.
+- **Two checks that only Linux made run on Windows too**: a `--cd` folder that does not exist (exit code 1, the error names it)
+  and an unknown option of the launcher (exit code 2 and the usage).
+- **`powerj.exe` reads the session through `Start-Process -RedirectStandardInput`** instead of `cmd /c "… < smoke.txt"`, so a
+  path with spaces needs no quoting rule of `cmd`.
+- `common.sh` lists the PowerShell counterparts, and `CONTRIBUTING.md` says that a change to a session goes into both.
+  `NoHardcodedFrenchTest` reads the `.ps1` of `ci/` as it reads the `.sh`.
+
+### Fixed (review of the pull request of phase 5 of the audit v2, [#232](https://github.com/yp44/powerj/pull/232))
+- **The Windows smoke tests stop the release** (#183): `release.yml` ran the six scripts in one step ending with `exit 0`, and a
+  pwsh step fails on its last command only, so a script that exits with 2 (no `powerj.exe`) did not keep the files from being
+  uploaded. One step per script, as in `ci.yml`.
+- **The title of a pull request is checked as a commit subject** (#184): "Squash and merge" makes it the subject of the commit
+  on `main`, and only the commits of the branch were checked. `ci/check-commit-subjects.sh --title`; the job "Commit subjects"
+  moves to a workflow of its own, `subjects.yml`, which runs again when the title is edited without running the build. `Reapply
+  "…"`, which git writes for the revert of a revert, passes as `Revert "…"` does.
+- **A column without a name from a third-party module no longer empties the completion** (#185): `TypeInference` built a `Row`
+  from the names of `ColumnProvider.columnsOf`, and `Row` now refuses `null`; the completion of the line failed as a whole
+  (caught, so nothing was offered). A `null` name is left out (`TypeInferenceTest.aColumnWithoutANameFromAModuleIsLeftOut`,
+  seen red first), and the Javadoc of `columnsOf` says that no name is `null`.
+- **The Javadoc of `CmdletContext.service`** no longer gives `PerfReports` as its example, a type that a third-party module can no
+  longer see (#185): the services of today are for the built-in cmdlets only.
+
 ## [0.1.0] — never released (baseline)
 
 The functional baseline that 0.2.0 starts from; it was only ever built as `0.1.0-SNAPSHOT`.

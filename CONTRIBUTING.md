@@ -15,12 +15,14 @@ You need **JDK 25 or newer**. Maven is not needed: the `mvnw` wrapper downloads 
 ./mvnw -DskipFx verify                 # without the optional graphical module (a platform that has no JavaFX)
 ./mvnw -Psbom -DskipTests package      # + target/bom.json, the CycloneDX bill of materials
 bash ci/smoke/launcher.sh              # then any script of ci/smoke/ against that image
+pwsh ci/smoke/launcher.ps1             # on Windows, after mvnw.cmd -Pdist verify: the same sessions in PowerShell
 ./mvnw spotless:apply                  # fixes the formatting that `verify` would refuse
 ```
 
 Use `-pl <module> -am`, never `-pl <module>` alone: the other modules are then taken from your local repository, which
 may hold an older build. The smoke tests of `ci/smoke/` exercise what unit tests cannot: the module system of the
-packaged launcher. `ci/smoke/fx.sh` needs a display (Xvfb is enough).
+packaged launcher. `ci/smoke/fx.sh` needs a display (Xvfb is enough). Each `*.ps1` is the Windows counterpart of the
+`*.sh` of the same name (`ci/smoke/common.sh` lists them): a change to a session goes into both.
 
 ## The gates of `./mvnw verify`
 
@@ -134,9 +136,15 @@ JLine and JavaFX, which ship in the application, come alone.
   fix removes the `@Disabled`.
 - **Break your own test.** After writing a test, change the code on purpose (invert a condition, drop a call) and check
   that the test fails. A test that cannot fail is worth nothing; several tests of this project were corrected this way.
-- **Commit messages** follow `type(scope): subject` (`feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `build`), in the
-  imperative, and say *why* in the body. Reference the issue (`#nn`, always in the squashed commit), and the requirement
-  (`FR-70`) or the review finding (`C-13`) when there is one.
+- **Commit messages** follow `type(scope): subject`, in the imperative, and say *why* in the body. The type is one of
+  `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `build`, `perf` (faster, same behavior), `chore` (housekeeping that
+  changes neither the product nor its build) and `style` (formatting only); `!` after the type or the scope marks a breaking
+  change (`feat(api)!: …`). The scope is optional and goes **in parentheses**, in lower case: the module or the cmdlet
+  (`fix(fx): …`, `feat(select): …`, `refactor(api,cmdlets): …`), never in place of the type (`select: …`). The CI checks the
+  subject of every commit of a pull request (`ci/check-commit-subjects.sh origin/main HEAD` runs it before you push) and
+  its title, which "Squash and merge" makes the subject of the commit on `main`; a merge, a revert or a reapply written by
+  git passes as it is. Reference the issue (`#nn`, always in the squashed commit), and the
+  requirement (`FR-70`) or the review finding (`C-13`) when there is one.
 - **Requirements are traced.** Behavior comes from a requirement `FR-nn` of [the specification](docs/SPECIFICATION.md);
   cite it in the Javadoc of the class that implements it and in the test that checks it.
 - **A test does not assert what the machine happens to deliver**: no number of milliseconds, no count of profiler samples.

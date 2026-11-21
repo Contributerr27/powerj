@@ -55,7 +55,13 @@ public interface CmdletContext<O> {
         throw new UnsupportedOperationException("this context cannot change the environment");
     }
 
-    /** Value of a session variable. */
+    /**
+     * Value of a session variable, as the user reads it: {@code variable("x")} is {@code $x}, and the automatic variables
+     * ({@code ?}, {@code exit}, {@code last}…) are included. Empty when the variable is not set, and also when it holds
+     * {@code null} ({@code $x = $null}): the two cannot be told apart here.
+     *
+     * @param name the name without {@code $}, the case of which matters
+     */
     Optional<Object> variable(String name);
 
     /**
@@ -156,7 +162,8 @@ public interface CmdletContext<O> {
 
     /**
      * A service that the shell offers for what only a few cmdlets need, so that the contract of every cmdlet does not
-     * grow with it ({@code context.service(PerfReports.class)}, in {@code io.powerj.api.perf}).
+     * grow with it. The services offered today are for the built-in cmdlets only (the reports of the perf mode, whose
+     * package is not exported to other modules): a third-party module gets none yet.
      *
      * @return the service, or empty if this shell does not offer it
      */
